@@ -1,20 +1,23 @@
 name: Publish Python Package
 
 on:
-  push:
+  pull_request:
+    types:
+      - closed
     branches:
       - main
-    tags:
-      - "v*"
 
 jobs:
   build:
     name: Build And Validate
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set Up Python
         uses: actions/setup-python@v5
@@ -43,35 +46,11 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-  publish-testpypi:
-    name: Publish To TestPyPI
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/rnds-client
-    permissions:
-      id-token: write
-
-    steps:
-      - name: Download Distribution Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Publish To TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-
   publish-pypi:
     name: Publish To PyPI
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event.pull_request.merged == true
     environment:
       name: pypi
       url: https://pypi.org/p/rnds-client
