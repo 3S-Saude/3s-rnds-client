@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rnds-client"
+name = "3s-rnds-client"
 version = "0.1.0"
 description = "Cliente Python assíncrono para integração com a RNDS em aplicações Django."
 readme = "README.md"
