@@ -1,13 +1,13 @@
-# rnds-client
+# 3s-rnds-client
 
-`rnds-client` e uma biblioteca Python assincrona para integracao com a RNDS em aplicacoes Django.
+`3s-rnds-client` e uma biblioteca Python assincrona para integracao com a RNDS em aplicacoes Django.
 
 O pacote foi estruturado para publicacao no `pip`, com layout `src/`, metadata em `pyproject.toml` e namespace proprio em `rnds_client`.
 
 ## Instalacao
 
 ```bash
-pip install rnds-client
+pip install 3s-rnds-client
 ```
 
 ## Visao geral

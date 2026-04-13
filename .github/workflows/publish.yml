@@ -53,7 +53,7 @@ jobs:
     if: github.event.pull_request.merged == true
     environment:
       name: pypi
-      url: https://pypi.org/p/rnds-client
+      url: https://pypi.org/p/3s-rnds-client
     permissions:
       id-token: write
 
