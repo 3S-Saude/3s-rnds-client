@@ -2,8 +2,6 @@ name: Publish Python Package
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
@@ -42,30 +40,6 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
-
-  publish-testpypi:
-    name: Publish To TestPyPI
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/rnds-client
-    permissions:
-      id-token: write
-
-    steps:
-      - name: Download Distribution Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Publish To TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
 
   publish-pypi:
     name: Publish To PyPI
