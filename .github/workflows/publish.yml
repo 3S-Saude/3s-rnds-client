@@ -1,18 +1,23 @@
 name: Publish Python Package
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
 
 jobs:
   build:
     name: Build And Validate
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set Up Python
         uses: actions/setup-python@v5
@@ -45,7 +50,7 @@ jobs:
     name: Publish To PyPI
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event.pull_request.merged == true
     environment:
       name: pypi
       url: https://pypi.org/p/rnds-client
