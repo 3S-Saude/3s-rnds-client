@@ -114,6 +114,61 @@ def format_patient_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return patient_info
 
 
+def format_organization_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if payload.get("resourceType") != "Organization":
+        return None
+
+    organization_info: dict[str, Any] = {
+        "nome": payload.get("name"),
+        "telefone": None,
+        "email": None,
+        "ativo": payload.get("active"),
+        "tipo": _organization_type(payload.get("type")),
+        "ibge": None,
+        "logradouro": None,
+        "bairro": None,
+        "numero": None,
+        "complemento": None,
+        "cep": None,
+    }
+
+    telecoms = payload.get("telecom", [])
+    if isinstance(telecoms, list):
+        for telecom in telecoms:
+            system = telecom.get("system")
+            value = telecom.get("value")
+
+            if not value:
+                continue
+
+            if system == "phone" and organization_info["telefone"] is None:
+                organization_info["telefone"] = value
+
+            if system == "email" and organization_info["email"] is None:
+                organization_info["email"] = value
+
+            if organization_info["telefone"] is not None and organization_info["email"] is not None:
+                break
+
+    addresses = payload.get("address", [])
+    if isinstance(addresses, list) and addresses:
+        address = addresses[0]
+        organization_info["bairro"] = address.get("district")
+        organization_info["cep"] = address.get("postalCode")
+        organization_info["ibge"] = _ibge_code(address.get("_city"))
+
+        address_lines = address.get("line", [])
+        if isinstance(address_lines, list):
+            if len(address_lines) > 0:
+                organization_info["logradouro"] = address_lines[0]
+            if len(address_lines) > 1:
+                organization_info["numero"] = address_lines[1]
+            if len(address_lines) > 2:
+                organization_info["complemento"] = address_lines[2]
+
+    return organization_info
+
+
 def _main_cns(identifiers: list[dict[str, Any]]) -> str | None:
     for identifier in identifiers:
         if identifier.get("use") == "official":
@@ -128,3 +183,24 @@ def _all_cns(identifiers: list[dict[str, Any]]) -> list[str]:
         if "cns" in identifier.get("system", "") and identifier.get("value") is not None
     ]
 
+
+def _organization_type(types: Any) -> str | None:
+    if not isinstance(types, list) or not types:
+        return None
+
+    codings = types[0].get("coding", [])
+    if not isinstance(codings, list) or not codings:
+        return None
+
+    return codings[0].get("display")
+
+
+def _ibge_code(city_metadata: Any) -> str | None:
+    if not isinstance(city_metadata, dict):
+        return None
+
+    extensions = city_metadata.get("extension", [])
+    if not isinstance(extensions, list) or not extensions:
+        return None
+
+    return extensions[0].get("valueString")
