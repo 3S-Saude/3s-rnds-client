@@ -56,6 +56,7 @@ class EstablishmentsCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 "logradouro": "Rua A",
                 "bairro": "Centro",
                 "numero": "123",
+                "complemento": None,
                 "cep": "78000000",
             },
         )
