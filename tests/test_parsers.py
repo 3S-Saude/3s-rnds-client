@@ -88,6 +88,7 @@ class OrganizationParserTests(unittest.TestCase):
                 "logradouro": "RUA JULIO DOMINGOS DE CAMPOS",
                 "bairro": "CPA",
                 "numero": "S/N",
+                "complemento": "BLOCO 05",
                 "cep": "78049902",
             },
         )
