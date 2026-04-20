@@ -2,8 +2,6 @@
 
 `3s-rnds-client` e uma biblioteca Python assincrona para integracao com a RNDS em aplicacoes Django.
 
-O pacote foi estruturado para publicacao no `pip`, com layout `src/`, metadata em `pyproject.toml` e namespace proprio em `rnds_client`.
-
 ## Instalacao
 
 ```bash
@@ -19,20 +17,6 @@ O cliente concentra a infraestrutura comum de:
 - transporte HTTP assincrono com `httpx`
 - retry automatico em falhas transientes
 - organizacao por capacidades de dominio
-
-## Estrutura do pacote
-
-```text
-src/rnds_client/
-├── auth.py
-├── base_client.py
-├── capabilities/
-├── client.py
-├── exceptions.py
-├── parsers.py
-├── settings.py
-└── tokens.py
-```
 
 ## Uso rapido
 

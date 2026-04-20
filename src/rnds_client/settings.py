@@ -63,7 +63,7 @@ class RndsSettings:
     def from_environment(cls) -> "RndsSettings":
         auth_method = AuthMethod.from_environment()
         service_url = _required_environment_variable("RNDS_API_URL")
-        cns_authorization = os.getenv("CNS_SEC_SAUDE", "")
+        cns_authorization = os.getenv("RNDS_CNS_GESTOR", "")
         auth_token_url = _required_environment_variable("RNDS_AUTH_TOKEN_URL")
 
         if auth_method is AuthMethod.CERT:
