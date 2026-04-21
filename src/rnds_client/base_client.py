@@ -64,11 +64,13 @@ class RndsBaseClient:
 
     async def headers(self, force_refresh: bool = False) -> dict[str, str]:
         access_token = await self._ensure_access_token(force_refresh=force_refresh)
-        return {
+        headers = {
             "Content-Type": "application/json",
             "X-Authorization-Server": f"Bearer {access_token.value}",
-            "Authorization": self._settings.cns_authorization,
         }
+        if self._settings.cns_authorization:
+            headers["Authorization"] = self._settings.cns_authorization
+        return headers
 
     async def request(self, method: str, url: str, **kwargs: Any) -> Response:
         user_headers = dict(kwargs.pop("headers", {}))
@@ -79,7 +81,7 @@ class RndsBaseClient:
             **kwargs,
         )
 
-        if response.status_code in {401, 403}:
+        if response.status_code == 401:
             response = await self._http_client.request(
                 method,
                 url,
@@ -137,4 +139,3 @@ class RndsBaseClient:
 
     def payload(self) -> Any:
         return self._response.json() if self._response is not None else None
-
