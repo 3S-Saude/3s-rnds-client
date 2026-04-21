@@ -38,8 +38,10 @@ Exemplo de variaveis de ambiente:
 ```env
 RNDS_API_URL=https://rn-ehr-services.saude.gov.br/api/
 RNDS_AUTH_TOKEN_URL=https://ehr-auth.saude.gov.br/api/
-CNS_SEC_SAUDE=
+RNDS_CNS_GESTOR=
 ```
+
+Para compatibilidade com configuracoes legadas, a biblioteca tambem aceita `CNS_SEC_SAUDE`.
 
 ### Modo CERT
 
