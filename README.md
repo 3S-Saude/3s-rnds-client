@@ -129,9 +129,14 @@ from rnds_client.settings import RndsSettings
 
 async def criar_client_manual():
     settings = RndsSettings.from_environment()
-    base_client = RndsBaseClient(settings=settings, http_client=AsyncClient())
+    http_client = AsyncClient(timeout=120.0)
+    base_client = RndsBaseClient(settings=settings, http_client=http_client)
     return RndsClient(base_client=base_client)
 ```
+
+Clientes HTTP injetados manualmente mantem a configuracao definida pelo consumidor.
+O cliente criado por `RndsClient.create()` usa 120 segundos para conexao, leitura,
+escrita e espera por conexao disponivel.
 
 ## Tratamento de erros
 
