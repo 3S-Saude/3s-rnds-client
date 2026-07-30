@@ -12,11 +12,9 @@ from rnds_client.rira.schemas.fhir.service_request import ServiceRequest
 from rnds_client.rira.schemas.rira_document import RiraDocumentData
 from rnds_client.rira.settings import RiraFhirSettings
 
-_STATUS_PENDING = "pending"
-
 _APPOINTMENT_STATUS_MAP = {
-    "pending": "waitlist",
-    "returned-to-requester": "waitlist",
+    "pending": "proposed",
+    "returned-to-requester": "proposed",
     "booked": "booked",
     "attended": "fulfilled",
 }
@@ -31,16 +29,13 @@ def montar_bundle(
     appointment_status = _APPOINTMENT_STATUS_MAP[composition_status]
     id_rnds_anterior = _buscar_id_rnds_anterior(dados.id_local)
 
-    condition = Condition.from_rira(dados, settings)
-    service_request = ServiceRequest.from_rira(dados, settings, FULLURL_CONDITION)
+    condition = Condition.from_rira(dados, settings, timestamp)
+    service_request = ServiceRequest.from_rira(dados, settings, FULLURL_CONDITION, timestamp)
     appointment = Appointment.from_rira(
-        dados, settings, appointment_status, FULLURL_SERVICE_REQUEST, FULLURL_CONDITION
-    )
-    event_ref = (
-        FULLURL_SERVICE_REQUEST if composition_status == _STATUS_PENDING else FULLURL_APPOINTMENT
+        dados, settings, appointment_status, FULLURL_SERVICE_REQUEST, FULLURL_CONDITION, timestamp
     )
     composition = Composition.from_rira(
-        dados, settings, composition_status, FULLURL_APPOINTMENT, event_ref, timestamp, id_rnds_anterior
+        dados, settings, composition_status, FULLURL_APPOINTMENT, timestamp, id_rnds_anterior
     )
     bundle = Bundle.from_rira(dados, settings, composition, appointment, service_request, condition, timestamp)
     return bundle.model_dump(exclude_none=True)

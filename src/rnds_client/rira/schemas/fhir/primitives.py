@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class Coding(BaseModel):
     system: str
+    version: str | None = None
     code: str
     display: str | None = None
 
@@ -23,6 +24,7 @@ class IdentifierRef(BaseModel):
 
 
 class Meta(BaseModel):
+    lastUpdated: str | None = None
     profile: list[str]
 
 

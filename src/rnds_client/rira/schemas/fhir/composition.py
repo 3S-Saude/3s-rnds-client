@@ -6,18 +6,20 @@ from pydantic import BaseModel
 
 from rnds_client.rira.codesystems import (
     CNES_SYSTEM,
+    FULLURL_APPOINTMENT,
+    FULLURL_SERVICE_REQUEST,
+    INDIVIDUO_SYSTEM,
     MODALIDADE_SYSTEM,
     STATUS_REGULACAO_SYSTEM,
     TIPO_DOCUMENTO_SYSTEM,
 )
 from rnds_client.rira.schemas.fhir.primitives import Coding, CodeableConcept, Identifier, IdentifierRef, Meta, Period
-from rnds_client.rira.utils import patient_identifier_system
 
 if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
     from rnds_client.rira.settings import RiraFhirSettings
 
-_STATUS_RETURNED = "returned-to-requester"
+_STATUS_VERSION = "20230801"
 
 
 class CompositionEventDetail(BaseModel):
@@ -69,7 +71,6 @@ class Composition(BaseModel):
         settings: RiraFhirSettings,
         composition_status: str,
         appointment_ref: str,
-        event_ref: str,
         timestamp: str,
         id_rnds_anterior: str | None,
     ) -> Composition:
@@ -81,11 +82,20 @@ class Composition(BaseModel):
         )
         author_cnes = dados.cnes_regulador or dados.cnes_executante or settings.cnes_autor
 
-        detail: list[CompositionEventDetail] = [
-            CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes))
-        ]
-        if composition_status == _STATUS_RETURNED:
-            detail.append(CompositionEventDetail(reference=event_ref))
+        if composition_status == "pending":
+            detail: list[CompositionEventDetail] = [
+                CompositionEventDetail(reference=FULLURL_SERVICE_REQUEST),
+                CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes)),
+            ]
+        elif composition_status in ("booked", "attended"):
+            detail = [
+                CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes)),
+                CompositionEventDetail(reference=FULLURL_APPOINTMENT),
+            ]
+        else:  # returned-to-requester
+            detail = [
+                CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes)),
+            ]
 
         relates_to = (
             [RelatesTo(
@@ -97,16 +107,13 @@ class Composition(BaseModel):
         )
 
         return cls(
-            meta=Meta(profile=[settings.comp_profile]),
+            meta=Meta(lastUpdated=timestamp, profile=[settings.comp_profile]),
             type=CodeableConcept(coding=[Coding(system=TIPO_DOCUMENTO_SYSTEM, code="RA")]),
             category=[
                 CodeableConcept(coding=[Coding(system=MODALIDADE_SYSTEM, code=dados.modalidade)])
             ],
             subject=IdentifierRef(
-                identifier=Identifier(
-                    system=patient_identifier_system(dados.id_paciente),
-                    value=dados.id_paciente,
-                )
+                identifier=Identifier(system=INDIVIDUO_SYSTEM, value=dados.id_paciente)
             ),
             date=timestamp,
             author=[IdentifierRef(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes))],
@@ -114,7 +121,11 @@ class Composition(BaseModel):
                 CompositionEvent(
                     code=[
                         CodeableConcept(
-                            coding=[Coding(system=STATUS_REGULACAO_SYSTEM, code=composition_status)]
+                            coding=[Coding(
+                                system=STATUS_REGULACAO_SYSTEM,
+                                version=_STATUS_VERSION,
+                                code=composition_status,
+                            )]
                         )
                     ],
                     period=Period(start=dados.data_solicitacao, end=end_date),

@@ -7,12 +7,12 @@ from pydantic import BaseModel
 from rnds_client.rira.codesystems import (
     APPOINTMENT_TYPE_SYSTEM,
     CBO_SYSTEM,
+    INDIVIDUO_SYSTEM,
     MODALIDADE_SYSTEM,
     SIGTAP_SYSTEM,
     TIPO_PARTICIPANTE_SYSTEM,
 )
 from rnds_client.rira.schemas.fhir.primitives import Coding, CodeableConcept, Identifier, IdentifierRef, Meta
-from rnds_client.rira.utils import patient_identifier_system
 
 if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
@@ -48,6 +48,7 @@ class Appointment(BaseModel):
         appointment_status: str,
         service_request_ref: str,
         condition_ref: str,
+        timestamp: str,
     ) -> Appointment:
         end_date = (
             dados.data_atendimento
@@ -62,7 +63,7 @@ class Appointment(BaseModel):
             else None
         )
         return cls(
-            meta=Meta(profile=[settings.app_profile]),
+            meta=Meta(lastUpdated=timestamp, profile=[settings.app_profile]),
             status=appointment_status,
             serviceCategory=[
                 CodeableConcept(coding=[Coding(system=MODALIDADE_SYSTEM, code=dados.modalidade)])
@@ -71,7 +72,7 @@ class Appointment(BaseModel):
                 CodeableConcept(coding=[Coding(system=SIGTAP_SYSTEM, code=dados.sigtap)])
             ],
             appointmentType=CodeableConcept(
-                coding=[Coding(system=APPOINTMENT_TYPE_SYSTEM, code="ROUTINE")]
+                coding=[Coding(system=APPOINTMENT_TYPE_SYSTEM, code=dados.carater)]
             ),
             specialty=specialty,
             reasonReference=[{"reference": condition_ref}],
@@ -85,10 +86,7 @@ class Appointment(BaseModel):
                         CodeableConcept(coding=[Coding(system=TIPO_PARTICIPANTE_SYSTEM, code="PCT")])
                     ],
                     actor=IdentifierRef(
-                        identifier=Identifier(
-                            system=patient_identifier_system(dados.id_paciente),
-                            value=dados.id_paciente,
-                        )
+                        identifier=Identifier(system=INDIVIDUO_SYSTEM, value=dados.id_paciente)
                     ),
                     status="accepted",
                 )
