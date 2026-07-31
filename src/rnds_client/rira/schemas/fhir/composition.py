@@ -80,7 +80,7 @@ class Composition(BaseModel):
             or dados.data_autorizacao
             or dados.data_solicitacao
         )
-        author_cnes = dados.cnes_regulador or dados.cnes_executante or settings.cnes_autor
+        author_cnes = dados.cnes_regulador or dados.cnes_executante or dados.cnes_solicitante
 
         if composition_status == "pending":
             detail: list[CompositionEventDetail] = [

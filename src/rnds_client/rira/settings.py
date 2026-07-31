@@ -7,7 +7,6 @@ from dataclasses import dataclass
 @dataclass
 class RiraFhirSettings:
     naming_system_id: str
-    cnes_autor: str
     comp_profile: str
     sr_profile: str
     app_profile: str
@@ -17,7 +16,6 @@ class RiraFhirSettings:
     def from_environment(cls) -> "RiraFhirSettings":
         return cls(
             naming_system_id=os.environ["RIRA_NAMING_SYSTEM_ID"],
-            cnes_autor=os.environ["RIRA_CNES_AUTOR"],
             comp_profile=os.environ["RIRA_COMP_PROFILE"],
             sr_profile=os.environ["RIRA_SR_PROFILE"],
             app_profile=os.environ["RIRA_APP_PROFILE"],
