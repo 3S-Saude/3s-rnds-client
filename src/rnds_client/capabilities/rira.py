@@ -9,7 +9,6 @@ from rnds_client.rira.services import sender
 from rnds_client.rira.settings import RiraFhirSettings
 
 _BUNDLE_PATH = "fhir/r4/Bundle"
-_COMPOSITION_PATH = "fhir/r4/Composition"
 
 
 class RiraCapability:
@@ -29,7 +28,7 @@ class RiraCapability:
         return await self._enviar(dados, "returned-to-requester")
 
     async def get_documento(self, id_rnds: str) -> dict[str, Any]:
-        url = self._client.build_service_url(f"{_COMPOSITION_PATH}/{id_rnds}")
+        url = self._client.build_service_url(f"{_BUNDLE_PATH}/{id_rnds}")
         response = await self._client.request_with_retry("GET", url)
         return response.json() if response else {}
 
@@ -37,12 +36,18 @@ class RiraCapability:
         url = self._client.build_service_url(f"{_BUNDLE_PATH}/{id_rnds}")
         await self._client.request("DELETE", url)
 
-    def dump_bundle_json(self, dados: RiraDocumentData, composition_status: str) -> str:
-        return sender.dump_bundle_json(dados, composition_status)
+    def dump_bundle_json(
+        self,
+        dados: RiraDocumentData,
+        composition_status: str,
+        id_rnds_anterior: str | None = None,
+    ) -> str:
+        return sender.dump_bundle_json(dados, composition_status, id_rnds_anterior)
 
     async def _enviar(self, dados: RiraDocumentData, composition_status: str) -> str:
         settings = RiraFhirSettings.from_environment()
-        bundle_dict = sender.montar_bundle(dados, settings, composition_status)
+        id_rnds_anterior = await sender.buscar_id_rnds_anterior(dados.id_local)
+        bundle_dict = sender.montar_bundle(dados, settings, composition_status, id_rnds_anterior)
         url = self._client.build_service_url(_BUNDLE_PATH)
 
         response = await self._client.request(
@@ -52,5 +57,5 @@ class RiraCapability:
         )
 
         id_rnds = sender.extrair_id_rnds(response.headers.get("location", ""))
-        sender.salvar_envio(dados.id_local, id_rnds, composition_status)
+        await sender.salvar_envio(dados.id_local, id_rnds, composition_status)
         return id_rnds
