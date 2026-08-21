@@ -16,7 +16,15 @@ _RIRA_ENV = {
 os.environ.update(_RIRA_ENV)
 dj.configure(
     INSTALLED_APPS=["django.contrib.contenttypes", "django.contrib.auth", "rnds_client.rira"],
-    DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+    DATABASES={
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            # cache=shared: as funcoes async de sender.py rodam em outra thread
+            # (via sync_to_async); um ":memory:" isolado nao seria visto por ela.
+            "NAME": "file:rira_test?mode=memory&cache=shared",
+            "OPTIONS": {"uri": True},
+        }
+    },
 )
 django.setup()
 
@@ -180,8 +188,10 @@ class TestCamposDeNegocio(unittest.TestCase):
 class TestAppointmentExigeDatas(unittest.TestCase):
 
     def test_pending_nao_exige_data_agendamento(self):
+        # exclude_none=True (usado em todo o bundle para gerar FHIR valido) remove
+        # a chave quando o valor e None, entao ela nao aparece no dict.
         appointment = _resource("Appointment", id_local="appt-pending")
-        self.assertIsNone(appointment["start"])
+        self.assertNotIn("start", appointment)
 
     def test_booked_sem_data_agendamento_ou_autorizacao_falha(self):
         with self.assertRaises(Exception):
