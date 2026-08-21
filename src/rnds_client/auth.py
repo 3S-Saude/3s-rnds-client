@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from httpx import AsyncClient, Response
+from httpx import AsyncClient, Response, Timeout
 
 from rnds_client.exceptions import RndsAuthenticationError, RndsConfigurationError
 from rnds_client.settings import ApiCredentials, AuthMethod, RndsSettings
+
+
+_HTTP_TIMEOUT_SECONDS = 120.0
 
 
 class AuthenticationStrategy:
@@ -69,8 +72,12 @@ def build_http_client(settings: RndsSettings) -> AsyncClient:
     if settings.auth_method is AuthMethod.CERT:
         if settings.certificate_files is None:
             raise RndsConfigurationError("CERT authentication requires RNDS_CERT and RNDS_KEY.")
-        return AsyncClient(cert=settings.certificate_files.as_httpx_cert(), verify=True)
-    return AsyncClient()
+        return AsyncClient(
+            cert=settings.certificate_files.as_httpx_cert(),
+            verify=True,
+            timeout=Timeout(_HTTP_TIMEOUT_SECONDS),
+        )
+    return AsyncClient(timeout=Timeout(_HTTP_TIMEOUT_SECONDS))
 
 
 def _access_token_from_response(response: Response, source: str) -> str:
@@ -83,4 +90,3 @@ def _access_token_from_response(response: Response, source: str) -> str:
         raise RndsAuthenticationError(f"{source} must contain access_token.")
 
     return access_token.removeprefix("Bearer ").strip()
-
