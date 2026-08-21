@@ -6,8 +6,6 @@ FULLURL_APPOINTMENT = "urn:uuid:transient-1"
 FULLURL_SERVICE_REQUEST = "urn:uuid:transient-2"
 FULLURL_CONDITION = "urn:uuid:transient-3"
 
-CPF_SYSTEM = "http://rnds.saude.gov.br/fhir/r4/NamingSystem/cpf"
-CNS_SYSTEM = "http://rnds.saude.gov.br/fhir/r4/NamingSystem/cns"
 INDIVIDUO_SYSTEM = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BRIndividuo-1.0"
 CNES_SYSTEM = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BREstabelecimentoSaude-1.0"
 CID10_SYSTEM = "http://www.saude.gov.br/fhir/r4/CodeSystem/BRCID10"

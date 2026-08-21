@@ -19,3 +19,4 @@ class RiraDocumentData:
     data_autorizacao: str | None = None
     data_agendamento: str | None = None
     data_atendimento: str | None = None
+    observacao: str | None = None

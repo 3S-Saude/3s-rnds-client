@@ -41,5 +41,5 @@ class Condition(BaseModel):
             subject=IdentifierRef(
                 identifier=Identifier(system=INDIVIDUO_SYSTEM, value=dados.id_paciente)
             ),
-            note=[Note(text="Sem observações")],
+            note=[Note(text=dados.observacao or "Sem observações")],
         )

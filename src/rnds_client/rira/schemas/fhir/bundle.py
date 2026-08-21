@@ -10,6 +10,7 @@ from rnds_client.rira.codesystems import (
     FULLURL_CONDITION,
     FULLURL_SERVICE_REQUEST,
 )
+from rnds_client.rira.schemas.fhir.primitives import Meta
 
 if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
@@ -35,6 +36,7 @@ class Bundle(BaseModel):
     identifier: BundleIdentifier
     type: str = "document"
     timestamp: str
+    meta: Meta
     entry: list[BundleEntry]
 
     @classmethod
@@ -51,6 +53,7 @@ class Bundle(BaseModel):
         return cls(
             identifier=BundleIdentifier(system=settings.bundle_id_system, value=dados.id_local),
             timestamp=timestamp,
+            meta=Meta(lastUpdated=timestamp),
             entry=[
                 BundleEntry(
                     fullUrl=FULLURL_COMPOSITION,

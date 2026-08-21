@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from rnds_client.rira.codesystems import (
     APPOINTMENT_TYPE_SYSTEM,
@@ -12,11 +12,14 @@ from rnds_client.rira.codesystems import (
     SIGTAP_SYSTEM,
     TIPO_PARTICIPANTE_SYSTEM,
 )
+from rnds_client.rira.exceptions import RiraValidationError
 from rnds_client.rira.schemas.fhir.primitives import Coding, CodeableConcept, Identifier, IdentifierRef, Meta
 
 if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
     from rnds_client.rira.settings import RiraFhirSettings
+
+_STATUS_DISPENSA_START_END = {"proposed", "cancelled", "waitlist"}
 
 
 class AppointmentParticipant(BaseModel):
@@ -39,6 +42,15 @@ class Appointment(BaseModel):
     created: str
     basedOn: list[dict]
     participant: list[AppointmentParticipant]
+
+    @model_validator(mode="after")
+    def datas_obrigatorias_para_status_confirmado(self) -> Appointment:
+        if self.status not in _STATUS_DISPENSA_START_END and (self.start is None or self.end is None):
+            raise RiraValidationError(
+                f"status '{self.status}' exige start e end (invariante FHIR Appointment). "
+                "Preencha data_agendamento ou data_autorizacao em RiraDocumentData."
+            )
+        return self
 
     @classmethod
     def from_rira(

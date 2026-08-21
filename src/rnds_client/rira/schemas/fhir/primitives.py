@@ -25,7 +25,7 @@ class IdentifierRef(BaseModel):
 
 class Meta(BaseModel):
     lastUpdated: str | None = None
-    profile: list[str]
+    profile: list[str] | None = None
 
 
 class Period(BaseModel):
