@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 
@@ -26,17 +27,21 @@ call_command("migrate", "--run-syncdb", verbosity=0)
 from rnds_client.rira.codesystems import (  # noqa: E402
     CID10_SYSTEM,
     CNES_SYSTEM,
-    CNS_SYSTEM,
-    CPF_SYSTEM,
+    INDIVIDUO_SYSTEM,
     SIGTAP_SYSTEM,
     STATUS_REGULACAO_SYSTEM,
     TIPO_DOCUMENTO_SYSTEM,
 )
 from rnds_client.rira.schemas.rira_document import RiraDocumentData  # noqa: E402
-from rnds_client.rira.services.sender import montar_bundle, salvar_envio  # noqa: E402
+from rnds_client.rira.services.sender import (  # noqa: E402
+    buscar_id_rnds_anterior,
+    montar_bundle,
+    salvar_envio,
+)
 from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
 
 _SETTINGS = RiraFhirSettings.from_environment()
+_DATA_AGENDAMENTO = "2024-01-20T09:00:00-03:00"
 
 
 def _dados(**kwargs) -> RiraDocumentData:
@@ -56,7 +61,8 @@ def _dados(**kwargs) -> RiraDocumentData:
 
 def _bundle(**kwargs) -> dict:
     status = kwargs.pop("_status", "pending")
-    return montar_bundle(_dados(**kwargs), _SETTINGS, status)
+    id_rnds_anterior = kwargs.pop("_id_rnds_anterior", None)
+    return montar_bundle(_dados(**kwargs), _SETTINGS, status, id_rnds_anterior)
 
 
 def _comp(**kwargs) -> dict:
@@ -71,6 +77,14 @@ def _resource(resource_type: str, **kwargs) -> dict:
     )
 
 
+def _salvar_envio_sync(id_local: str, id_rnds: str, status: str) -> None:
+    asyncio.run(salvar_envio(id_local, id_rnds, status))
+
+
+def _buscar_id_rnds_anterior_sync(id_local: str) -> str | None:
+    return asyncio.run(buscar_id_rnds_anterior(id_local))
+
+
 class TestEstruturaBundle(unittest.TestCase):
 
     def setUp(self):
@@ -81,6 +95,9 @@ class TestEstruturaBundle(unittest.TestCase):
 
     def test_bundle_type_document(self):
         self.assertEqual(self.bundle["type"], "document")
+
+    def test_bundle_tem_meta_last_updated(self):
+        self.assertIn("lastUpdated", self.bundle["meta"])
 
     def test_tem_4_entries(self):
         self.assertEqual(len(self.bundle["entry"]), 4)
@@ -108,13 +125,15 @@ class TestEstruturaBundle(unittest.TestCase):
 
 class TestCamposDeNegocio(unittest.TestCase):
 
-    def test_paciente_cpf_usa_system_correto(self):
+    def test_paciente_cpf_usa_system_fixo_individuo(self):
         comp = _comp(id_paciente="12345678901")
-        self.assertEqual(comp["subject"]["identifier"]["system"], CPF_SYSTEM)
+        self.assertEqual(comp["subject"]["identifier"]["system"], INDIVIDUO_SYSTEM)
 
-    def test_paciente_cns_usa_system_correto(self):
+    def test_paciente_cns_usa_system_fixo_individuo(self):
+        # O manual (item 8.1, comentário sobre "subject") define que o system e
+        # fixo independentemente do valor ser CPF ou CNS.
         comp = _comp(id_paciente="123456789012345")
-        self.assertEqual(comp["subject"]["identifier"]["system"], CNS_SYSTEM)
+        self.assertEqual(comp["subject"]["identifier"]["system"], INDIVIDUO_SYSTEM)
 
     def test_author_usa_cnes_system(self):
         comp = _comp()
@@ -125,6 +144,14 @@ class TestCamposDeNegocio(unittest.TestCase):
         coding = cond["code"]["coding"][0]
         self.assertEqual(coding["code"], "J180")
         self.assertEqual(coding["system"], CID10_SYSTEM)
+
+    def test_condition_note_usa_observacao_informada(self):
+        cond = _resource("Condition", observacao="Dor lombar cronica.")
+        self.assertEqual(cond["note"][0]["text"], "Dor lombar cronica.")
+
+    def test_condition_note_usa_padrao_quando_ausente(self):
+        cond = _resource("Condition")
+        self.assertEqual(cond["note"][0]["text"], "Sem observações")
 
     def test_service_request_tem_sigtap_e_system_correto(self):
         sr = _resource("ServiceRequest")
@@ -145,9 +172,34 @@ class TestCamposDeNegocio(unittest.TestCase):
         self.assertEqual(coding["system"], STATUS_REGULACAO_SYSTEM)
 
     def test_composition_event_code_booked(self):
-        comp = _comp(_status="booked", id_local="item-ev-booked")
+        comp = _comp(_status="booked", id_local="item-ev-booked", data_agendamento=_DATA_AGENDAMENTO)
         coding = comp["event"][0]["code"][0]["coding"][0]
         self.assertEqual(coding["code"], "booked")
+
+
+class TestAppointmentExigeDatas(unittest.TestCase):
+
+    def test_pending_nao_exige_data_agendamento(self):
+        appointment = _resource("Appointment", id_local="appt-pending")
+        self.assertIsNone(appointment["start"])
+
+    def test_booked_sem_data_agendamento_ou_autorizacao_falha(self):
+        with self.assertRaises(Exception):
+            _resource("Appointment", _status="booked", id_local="appt-booked-invalido")
+
+    def test_attended_sem_data_agendamento_ou_autorizacao_falha(self):
+        with self.assertRaises(Exception):
+            _resource("Appointment", _status="attended", id_local="appt-attended-invalido")
+
+    def test_booked_com_data_agendamento_funciona(self):
+        appointment = _resource(
+            "Appointment",
+            _status="booked",
+            id_local="appt-booked-valido",
+            data_agendamento=_DATA_AGENDAMENTO,
+        )
+        self.assertEqual(appointment["start"], _DATA_AGENDAMENTO)
+        self.assertIsNotNone(appointment["end"])
 
 
 class TestLogicaSubstituicao(unittest.TestCase):
@@ -157,8 +209,14 @@ class TestLogicaSubstituicao(unittest.TestCase):
         self.assertNotIn("relatesTo", comp)
 
     def test_segundo_envio_tem_relates_to(self):
-        salvar_envio("sub-dois", "uuid-rnds-anterior-abc", "pending")
-        comp = _comp(id_local="sub-dois", _status="booked")
+        _salvar_envio_sync("sub-dois", "uuid-rnds-anterior-abc", "pending")
+        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-dois")
+        comp = _comp(
+            id_local="sub-dois",
+            _status="booked",
+            _id_rnds_anterior=id_rnds_anterior,
+            data_agendamento=_DATA_AGENDAMENTO,
+        )
         self.assertIn("relatesTo", comp)
         relates = comp["relatesTo"][0]
         self.assertEqual(relates["code"], "replaces")
@@ -168,15 +226,27 @@ class TestLogicaSubstituicao(unittest.TestCase):
         )
 
     def test_relates_to_aponta_para_ultimo_id_rnds(self):
-        salvar_envio("sub-tres", "primeiro-id", "pending")
-        salvar_envio("sub-tres", "segundo-id", "booked")  # atualiza o mesmo id_local
-        comp = _comp(id_local="sub-tres", _status="attended")
+        _salvar_envio_sync("sub-tres", "primeiro-id", "pending")
+        _salvar_envio_sync("sub-tres", "segundo-id", "booked")  # atualiza o mesmo id_local
+        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-tres")
+        comp = _comp(
+            id_local="sub-tres",
+            _status="attended",
+            _id_rnds_anterior=id_rnds_anterior,
+            data_agendamento=_DATA_AGENDAMENTO,
+        )
         ref = comp["relatesTo"][0]["targetReference"]["reference"]
         self.assertEqual(ref, "Composition/segundo-id")
 
     def test_ids_locais_distintos_nao_interferem(self):
-        salvar_envio("sub-outro", "id-de-outro-item", "pending")
-        comp = _comp(id_local="sub-sem-historico", _status="booked")
+        _salvar_envio_sync("sub-outro", "id-de-outro-item", "pending")
+        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-sem-historico")
+        comp = _comp(
+            id_local="sub-sem-historico",
+            _status="booked",
+            _id_rnds_anterior=id_rnds_anterior,
+            data_agendamento=_DATA_AGENDAMENTO,
+        )
         self.assertNotIn("relatesTo", comp)
 
 
