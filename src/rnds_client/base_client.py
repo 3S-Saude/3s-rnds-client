@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from httpx import AsyncClient, HTTPError, HTTPStatusError, Response
@@ -8,6 +9,25 @@ from httpx import AsyncClient, HTTPError, HTTPStatusError, Response
 from rnds_client.auth import AuthenticationFactory, build_http_client
 from rnds_client.settings import RndsSettings
 from rnds_client.tokens import AccessToken, DjangoTokenCache
+
+logger = logging.getLogger(__name__)
+
+_REDACTED_HEADERS = {"authorization", "x-authorization-server"}
+
+
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    return {key: ("***" if key.lower() in _REDACTED_HEADERS else value) for key, value in headers.items()}
+
+
+def _request_body(kwargs: dict[str, Any]) -> str | None:
+    content = kwargs.get("content")
+    if isinstance(content, bytes):
+        return content.decode("utf-8", errors="replace")
+    if isinstance(content, str):
+        return content
+    if "json" in kwargs:
+        return str(kwargs["json"])
+    return None
 
 
 class RndsBaseClient:
@@ -74,23 +94,37 @@ class RndsBaseClient:
 
     async def request(self, method: str, url: str, **kwargs: Any) -> Response:
         user_headers = dict(kwargs.pop("headers", {}))
-        response = await self._http_client.request(
-            method,
-            url,
-            headers={**await self.headers(), **user_headers},
-            **kwargs,
-        )
+
+        request_headers = {**await self.headers(), **user_headers}
+        self._log_request(method, url, request_headers, kwargs)
+        response = await self._http_client.request(method, url, headers=request_headers, **kwargs)
 
         if response.status_code == 401:
-            response = await self._http_client.request(
-                method,
-                url,
-                headers={**await self.headers(force_refresh=True), **user_headers},
-                **kwargs,
-            )
+            request_headers = {**await self.headers(force_refresh=True), **user_headers}
+            self._log_request(method, url, request_headers, kwargs)
+            response = await self._http_client.request(method, url, headers=request_headers, **kwargs)
 
+        self._log_response(method, url, response)
         response.raise_for_status()
         return response
+
+    @staticmethod
+    def _log_request(method: str, url: str, headers: dict[str, str], kwargs: dict[str, Any]) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            "RNDS request %s %s\nheaders=%s\nbody=%s",
+            method, url, _redact_headers(headers), _request_body(kwargs),
+        )
+
+    @staticmethod
+    def _log_response(method: str, url: str, response: Response) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            "RNDS response %s %s -> %s\nheaders=%s\nbody=%s",
+            method, url, response.status_code, dict(response.headers), response.text,
+        )
 
     async def request_with_retry(
         self,
