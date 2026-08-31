@@ -17,6 +17,7 @@ O cliente concentra a infraestrutura comum de:
 - transporte HTTP assincrono com `httpx`
 - retry automatico em falhas transientes
 - organizacao por capacidades de dominio
+- envio e consulta de documentos RIRA (Registro de Informacoes da Regulacao Assistencial)
 
 ## Uso rapido
 
@@ -28,6 +29,14 @@ async def buscar_paciente(identificador: str):
     async with await RndsClient.create() as client:
         return await client.pacientes.buscar_pessoa(identificador)
 ```
+
+### Verificacao
+
+Com as variaveis de ambiente configuradas, `RndsClient.create()` sem erro ja
+indica que autenticacao e configuracao estao ok. Para um teste ponta a ponta,
+chame `buscar_pessoa` com um CPF (11 digitos) ou CNS conhecido: o retorno e um
+`dict` normalizado (`nome`, `cns`, `cpf`, `data_nascimento`, `sexo`, ...), ou
+`None` se a RNDS nao encontrar a pessoa.
 
 ## Modo debug
 
@@ -70,39 +79,59 @@ async def buscar_paciente_debug_com_cache(identificador: str):
 
 Os logs do modo debug mascaram parcialmente tokens e senha antes de exibi-los.
 
+Alem disso, `RndsBaseClient` emite logs de nivel `DEBUG` (logger
+`rnds_client.base_client`) com o request e o response de toda chamada a RNDS.
+Os headers `Authorization` e `X-Authorization-Server` sao mascarados como `***`.
+
+```python
+import logging
+
+logging.getLogger("rnds_client.base_client").setLevel(logging.DEBUG)
+```
+
 ## Configuracao no Django
 
 O pacote usa o cache padrao do Django para armazenar o token RNDS. Antes de usar o client, garanta que o projeto tenha `CACHES` configurado.
 
-Exemplo de variaveis de ambiente:
+A biblioteca le estas variaveis do ambiente do processo — defina-as como preferir (`.env` do seu projeto, secrets de CI, `export`...):
 
 ```env
-RNDS_API_URL=https://rn-ehr-services.saude.gov.br/api/
-RNDS_AUTH_TOKEN_URL=https://ehr-auth.saude.gov.br/api/
+# RNDS base
+RNDS_API_URL=
+RNDS_AUTH_TOKEN_URL=
 RNDS_CNS_GESTOR=
+
+# Auth CERT
+RNDS_CERT=
+RNDS_KEY=
+
+# Auth API
+RNDS_AUTH_LOGIN_URL=
+RNDS_USER=
+RNDS_PASSWORD=
+
+# RIRA (so com rnds_client.rira)
+RIRA_NAMING_SYSTEM_ID=
+RIRA_COMP_PROFILE=
+RIRA_SR_PROFILE=
+RIRA_APP_PROFILE=
+RIRA_COND_PROFILE=
 ```
 
-Para compatibilidade com configuracoes legadas, a biblioteca tambem aceita `CNS_SEC_SAUDE`.
+- `RNDS_API_URL` e `RNDS_AUTH_TOKEN_URL` sao sempre obrigatorias. `RNDS_CNS_GESTOR` e opcional (aceita tambem `CNS_SEC_SAUDE`, por compatibilidade).
+- Autenticacao: use o bloco **CERT** (`RNDS_CERT`, `RNDS_KEY`) ou o bloco **API** (`RNDS_AUTH_LOGIN_URL`, `RNDS_USER`, `RNDS_PASSWORD`).
+- Sem `RNDS_AUTH_METHOD`, o pacote escolhe `API` quando houver `RNDS_USER` ou `RNDS_PASSWORD`; caso contrario, `CERT`.
+- As `RIRA_*` so sao lidas se voce usar `rnds_client.rira`; o que cada uma faz esta em [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#variáveis-de-ambiente).
 
-### Modo CERT
+## RIRA (Registro de Informacoes da Regulacao Assistencial)
 
-```env
-RNDS_AUTH_METHOD=CERT
-RNDS_CERT=/caminho/para/cert.pem
-RNDS_KEY=/caminho/para/key.pem
-```
+O modulo `rnds_client.rira` registra na RNDS o andamento de solicitacoes reguladas
+(`pending` / `booked` / `attended` / `returned-to-requester`) a partir de um
+`RiraDocumentData`. E um app Django opcional: precisa de entrada em
+`INSTALLED_APPS`, `migrate` e das variaveis `RIRA_*` (bloco `RIRA` da secao
+[Configuracao no Django](#configuracao-no-django)).
 
-### Modo API
-
-```env
-RNDS_AUTH_METHOD=API
-RNDS_AUTH_LOGIN_URL=https://api-intermediaria.exemplo/login
-RNDS_AUTH_TOKEN_URL=https://api-intermediaria.exemplo/token
-RNDS_USER=usuario
-RNDS_PASSWORD=senha
-```
-
-Se `RNDS_AUTH_METHOD` nao for informado, o pacote escolhe `API` quando houver `RNDS_USER` ou `RNDS_PASSWORD`; caso contrario, usa `CERT`.
+Setup, uso, campos e regras: **[src/rnds_client/rira/README.md](src/rnds_client/rira/README.md)**.
 
 ## API publica
 
@@ -116,6 +145,10 @@ Metodos de pacientes:
 
 - `client.pacientes.buscar_pessoa(identificador)`
 - `client.pacientes.buscar_pessoa_debug(identificador, force_refresh_token=True)`
+
+Metodos de RIRA: `criar_documento_pending` / `_booked` / `_attended` /
+`_returned_to_requester`, `get_documento`, `deletar_documento`, `dump_bundle_json`
+— ver [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#api-clientrira).
 
 Uso explicito da infraestrutura base:
 
@@ -144,5 +177,48 @@ As excecoes proprias do pacote sao:
 
 - `RndsConfigurationError`
 - `RndsAuthenticationError`
+- `RndsSubmissionError`, `RiraValidationError` — do modulo RIRA (a segunda, na
+  pratica, sobe como `pydantic.ValidationError`). Detalhes em
+  [Tratamento de erros](src/rnds_client/rira/README.md#tratamento-de-erros).
 
 Chamadas HTTP tambem podem propagar erros do `httpx`.
+
+## Versao
+
+Versao atual: `0.2.0`.
+
+- Novo modulo/app `rnds_client.rira` para envio e consulta de documentos RIRA.
+- Nova dependencia: `pydantic>=2.0` (schemas FHIR).
+- `RndsBaseClient` passa a logar request/response em nivel `DEBUG` (com headers sensiveis mascarados).
+- Novos simbolos em `rnds_client`: `RiraDocumentData`, `RiraFhirSettings`, `RiraValidationError`, `RndsSubmissionError`.
+- `rnds_client.__version__` realinhado para `0.2.0`.
+
+Ao atualizar de `0.1.x`: rode `pip install -U 3s-rnds-client` (o `pydantic` vem
+junto). Quem usa apenas `client.pacientes` / `client.estabelecimentos` nao
+precisa de mais nada; para habilitar o RIRA, siga a secao
+[RIRA](#rira-registro-de-informacoes-da-regulacao-assistencial).
+
+## Desenvolvimento
+
+### Ambiente e testes
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .          # instala o pacote + django, httpx, pydantic
+python -m unittest discover -s tests -v
+```
+
+A suite usa `unittest` (nao ha `pytest` nas dependencias). `tests/test_rira_bundle.py`
+configura o Django por conta propria; nao e preciso `DJANGO_SETTINGS_MODULE`.
+
+### Estrutura do pacote
+
+- `src/rnds_client/` — cliente base: `base_client`, `auth`, `tokens`, `settings`, `parsers`, `client`.
+- `src/rnds_client/capabilities/` — uma capability por arquivo (`patients.py`, `establishments.py`, `rira.py`), exposta em `RndsClient` como `client.pacientes` / `client.estabelecimentos` / `client.rira`.
+- `src/rnds_client/<nome>/` — quando a capability tem estado/ORM, e um app Django completo (ver `rnds_client.rira`: `models/`, `migrations/`, `schemas/`, `services/`, `README.md`).
+
+
+### Versao e publicacao
+
+- SemVer. `version` em `pyproject.toml` e `rnds_client.__version__` devem casar.
+- A publicacao no PyPI e automatica no merge do PR em `main` (`.github/workflows/publish.yml`).
