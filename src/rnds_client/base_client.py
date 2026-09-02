@@ -12,21 +12,13 @@ from rnds_client.tokens import AccessToken, DjangoTokenCache
 
 logger = logging.getLogger(__name__)
 
-_REDACTED_HEADERS = {"authorization", "x-authorization-server"}
 
-
-def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
-    return {key: ("***" if key.lower() in _REDACTED_HEADERS else value) for key, value in headers.items()}
-
-
-def _request_body(kwargs: dict[str, Any]) -> str | None:
+def _request_body_len(kwargs: dict[str, Any]) -> int | None:
     content = kwargs.get("content")
-    if isinstance(content, bytes):
-        return content.decode("utf-8", errors="replace")
-    if isinstance(content, str):
-        return content
+    if isinstance(content, (bytes, str)):
+        return len(content)
     if "json" in kwargs:
-        return str(kwargs["json"])
+        return None
     return None
 
 
@@ -113,8 +105,8 @@ class RndsBaseClient:
         if not logger.isEnabledFor(logging.DEBUG):
             return
         logger.debug(
-            "RNDS request %s %s\nheaders=%s\nbody=%s",
-            method, url, _redact_headers(headers), _request_body(kwargs),
+            "RNDS request %s %s (body_len=%s)",
+            method, url, _request_body_len(kwargs),
         )
 
     @staticmethod
@@ -122,8 +114,8 @@ class RndsBaseClient:
         if not logger.isEnabledFor(logging.DEBUG):
             return
         logger.debug(
-            "RNDS response %s %s -> %s\nheaders=%s\nbody=%s",
-            method, url, response.status_code, dict(response.headers), response.text,
+            "RNDS response %s %s -> %s (location=%s)",
+            method, url, response.status_code, response.headers.get("location"),
         )
 
     async def request_with_retry(

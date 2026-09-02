@@ -72,7 +72,7 @@ class Composition(BaseModel):
         composition_status: str,
         appointment_ref: str,
         timestamp: str,
-        id_rnds_anterior: str | None,
+        predecessor_composition_id: str | None,
     ) -> Composition:
         end_date = (
             dados.data_atendimento
@@ -100,9 +100,11 @@ class Composition(BaseModel):
         relates_to = (
             [RelatesTo(
                 code="replaces",
-                targetReference=RelatesToTargetRef(reference=f"Composition/{id_rnds_anterior}"),
+                targetReference=RelatesToTargetRef(
+                    reference=f"Composition/{predecessor_composition_id}"
+                ),
             )]
-            if id_rnds_anterior
+            if predecessor_composition_id
             else None
         )
 
