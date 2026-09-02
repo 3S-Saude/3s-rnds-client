@@ -125,11 +125,18 @@ RIRA_COND_PROFILE=
 
 ## RIRA (Registro de Informacoes da Regulacao Assistencial)
 
-O modulo `rnds_client.rira` registra na RNDS o andamento de solicitacoes reguladas
-(`pending` / `booked` / `attended` / `returned-to-requester`) a partir de um
-`RiraDocumentData`. E um app Django opcional: precisa de entrada em
-`INSTALLED_APPS`, `migrate` e das variaveis `RIRA_*` (bloco `RIRA` da secao
+O modulo `rnds_client.rira` envia a RNDS o andamento de uma solicitacao regulada:
+a cada mudanca de status (`pending` -> `booked` -> `attended`, ou
+`returned-to-requester`), monta um documento FHIR a partir de um `RiraDocumentData`
+e faz um `POST`.
+
+**Configuracao:** so as variaveis de ambiente `RIRA_*` (bloco `RIRA` da secao
 [Configuracao no Django](#configuracao-no-django)).
+
+**O estado fica com quem chama.** Como o modulo nao persiste nada, o consumidor
+guarda o identificador local da solicitacao e os ids que a RNDS devolve; em cada
+atualizacao de status, informa qual documento esta sendo substituido
+(`predecessor_composition_id`).
 
 Setup, uso, campos e regras: **[src/rnds_client/rira/README.md](src/rnds_client/rira/README.md)**.
 
@@ -146,9 +153,9 @@ Metodos de pacientes:
 - `client.pacientes.buscar_pessoa(identificador)`
 - `client.pacientes.buscar_pessoa_debug(identificador, force_refresh_token=True)`
 
-Metodos de RIRA: `criar_documento_pending` / `_booked` / `_attended` /
-`_returned_to_requester`, `get_documento`, `deletar_documento`, `dump_bundle_json`
-— ver [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#api-clientrira).
+Metodos de RIRA: `enviar_rira` / `consultar_rira`, `get_documento`,
+`deletar_documento`, `dump_bundle_json` — ver
+[src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#api-clientrira).
 
 Uso explicito da infraestrutura base:
 
@@ -177,15 +184,25 @@ As excecoes proprias do pacote sao:
 
 - `RndsConfigurationError`
 - `RndsAuthenticationError`
-- `RndsSubmissionError`, `RiraValidationError` — do modulo RIRA (a segunda, na
-  pratica, sobe como `pydantic.ValidationError`). Detalhes em
+- Do modulo RIRA, `enviar_rira` converte qualquer falha em um destes tres erros:
+  - `ErroRiraTransitorio` — timeout, erro de conexao ou HTTP 408/429/5xx; vale
+    re-tentar (traz `retry_after` quando a RNDS informa).
+  - `ErroRiraRejeitado` — HTTP 4xx funcional ou invariante local violada;
+    re-tentar igual nao resolve.
+  - `ResultadoRiraIncerto` — o `POST` foi feito mas a resposta se perdeu; concilie
+    por `identifier` antes de reenviar.
+
+  `RndsSubmissionError` e `RiraValidationError` continuam exportadas, mas so
+  aparecem fora do fluxo de `enviar_rira` (ex.: `RiraValidationError` sobe como
+  `pydantic.ValidationError` ao usar `dump_bundle_json`). Detalhes em
   [Tratamento de erros](src/rnds_client/rira/README.md#tratamento-de-erros).
 
 Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.2.0`.
+Versao atual: `0.3.0` (contrato RIRA *stateless* — ver
+[docs/rira-evolucao-0.3.0.md](docs/rira-evolucao-0.3.0.md)).
 
 - Novo modulo/app `rnds_client.rira` para envio e consulta de documentos RIRA.
 - Nova dependencia: `pydantic>=2.0` (schemas FHIR).
@@ -208,14 +225,14 @@ pip install -e .          # instala o pacote + django, httpx, pydantic
 python -m unittest discover -s tests -v
 ```
 
-A suite usa `unittest` (nao ha `pytest` nas dependencias). `tests/test_rira_bundle.py`
-configura o Django por conta propria; nao e preciso `DJANGO_SETTINGS_MODULE`.
+A suite usa `unittest` (nao ha `pytest` nas dependencias) e nao precisa de
+`DJANGO_SETTINGS_MODULE` — nenhum modulo do pacote depende do ORM.
 
 ### Estrutura do pacote
 
 - `src/rnds_client/` — cliente base: `base_client`, `auth`, `tokens`, `settings`, `parsers`, `client`.
 - `src/rnds_client/capabilities/` — uma capability por arquivo (`patients.py`, `establishments.py`, `rira.py`), exposta em `RndsClient` como `client.pacientes` / `client.estabelecimentos` / `client.rira`.
-- `src/rnds_client/<nome>/` — quando a capability tem estado/ORM, e um app Django completo (ver `rnds_client.rira`: `models/`, `migrations/`, `schemas/`, `services/`, `README.md`).
+- `src/rnds_client/<nome>/` — quando a capability tem lógica própria além da chamada HTTP, vira um subpacote com `schemas/`, `services/` e `README.md` (ver `rnds_client.rira`). O pacote é *stateless* — sem `models/`/`migrations/`.
 
 
 ### Versao e publicacao

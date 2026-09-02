@@ -9,22 +9,24 @@ A partir de dados de negócio simples (`RiraDocumentData`), o módulo monta um
 do manual da RNDS/DATASUS e faz o `POST` para o endpoint `fhir/r4/Bundle`. Para
 inspecionar o JSON exato do Bundle, use [`dump_bundle_json`](#api-clientrira).
 
-> Disponível a partir da versão **0.2.0** do `3s-rnds-client`
-> (ver [Atualização de versão](#atualização-de-versão)).
+> Contrato **`0.3.0`** — *stateless*: o módulo **não** é um app Django, não roda
+> `migrate` e não grava nada em banco. Ele não guarda estado de envio — quem chama
+> é dono do identificador local e da cadeia de substituição. Ver
+> [Atualização de versão](#atualização-de-versão) e
+> [`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md).
 
 ---
 
 ## Índice
 
 - [Visão geral](#visão-geral)
-- [Instalação e configuração no Django](#instalação-e-configuração-no-django)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
 - [Modelo de dados: `RiraDocumentData`](#modelo-de-dados-riradocumentdata)
 - [Ciclo de vida da regulação](#ciclo-de-vida-da-regulação)
 - [API: `client.rira`](#api-clientrira)
+- [Resultado: `ResultadoEnvioRira`](#resultado-resultadoenviorira)
 - [Invariantes e validações](#invariantes-e-validações)
 - [Lógica de substituição (`relatesTo`)](#lógica-de-substituição-relatesto)
-- [Persistência local: `RNDSDocumentRecord`](#persistência-local-rndsdocumentrecord)
 - [Log de depuração](#log-de-depuração)
 - [Tratamento de erros](#tratamento-de-erros)
 - [Atualização de versão](#atualização-de-versão)
@@ -41,34 +43,19 @@ mudança de estado relevante gera um novo documento que **substitui** o anterior
 Fluxo de um envio:
 
 1. A aplicação monta um `RiraDocumentData` com os dados da regulação.
-2. `client.rira.criar_documento_<status>(dados)` monta o Bundle, envia e retorna
-   o `id_rnds`.
-3. Envios seguintes do mesmo `id_local` **substituem** o documento anterior
+2. `await client.rira.enviar_rira(dados, identificador_local, status_rira=...)`
+   monta o Bundle, envia e devolve um `ResultadoEnvioRira`.
+3. Envios seguintes do mesmo `identificador_local` **substituem** o documento
+   anterior — o chamador passa o `predecessor_composition_id`
    (ver [Lógica de substituição](#lógica-de-substituição-relatesto)).
 
-Pontos de entrada públicos: `RiraDocumentData` e `RiraFhirSettings`
-(`from rnds_client.rira`), e `RiraCapability`, exposta como `client.rira`.
+Pontos de entrada públicos (`from rnds_client.rira`): `RiraDocumentData`,
+`RiraFhirSettings`, `ResultadoEnvioRira`, as exceções `ErroRiraTransitorio` /
+`ErroRiraRejeitado` / `ResultadoRiraIncerto`, e `RiraCapability`, exposta como
+`client.rira`.
 
----
-
-## Instalação e configuração no Django
-
-O módulo é um **app Django** (usa o ORM para rastrear os envios). No projeto
-consumidor:
-
-```python
-# settings.py
-INSTALLED_APPS = [
-    # ...
-    "rnds_client.rira",
-]
-```
-
-```bash
-python manage.py migrate rnds_rira
-```
-
-A migração cria a tabela do [`RNDSDocumentRecord`](#persistência-local-rndsdocumentrecord).
+Para usar, bastam as [variáveis de ambiente](#variáveis-de-ambiente) e um
+`RndsClient`.
 
 ---
 
@@ -85,6 +72,10 @@ o RIRA exige — **todas obrigatórias**; se faltar alguma, o primeiro envio fal
 | `RIRA_APP_PROFILE`      | URL do perfil FHIR do recurso `Appointment`.                                                 |
 | `RIRA_COND_PROFILE`     | URL do perfil FHIR do recurso `Condition`.                                                   |
 
+O `identifier.system` do Bundle vem de `RIRA_NAMING_SYSTEM_ID` por padrão; o
+chamador pode sobrepor por envio passando `identifier_system=` a `enviar_rira`
+(útil quando o Naming System vem de uma credencial).
+
 Lista copiável (base + `RIRA_*`): seção
 [Configuração no Django](../../../README.md#configuracao-no-django) do README.
 
@@ -99,7 +90,7 @@ strings no formato `dateTime` FHIR (ex.: `2024-01-15T10:00:00-03:00`).
 
 | Campo              | Tipo  | Descrição                                                                 |
 |-------------------|-------|--------------------------------------------------------------------------|
-| `id_local`         | `str` | Identificador da solicitação no sistema de origem. Chave de correlação (ver [Lógica de substituição](#lógica-de-substituição-relatesto)). |
+| `id_local`         | `str` | Identificador da solicitação no sistema de origem. É sobrescrito pelo `identificador_local` passado a `enviar_rira`. Chave de correlação (ver [Lógica de substituição](#lógica-de-substituição-relatesto)). |
 | `id_paciente`      | `str` | CPF ou CNS do paciente.                                                 |
 | `sigtap`           | `str` | Código do procedimento na Tabela SUS (SIGTAP).                          |
 | `cid10`            | `str` | Código CID-10 do diagnóstico.                                           |
@@ -140,16 +131,16 @@ resposta ao envio.
 
 ## Ciclo de vida da regulação
 
-Cada método envia um status de regulação. `booked` e `attended` exigem que uma
-data de agendamento/autorização esteja preenchida (ver
+`enviar_rira` recebe o `status_rira` da etapa. `booked` e `attended` exigem que
+uma data de agendamento/autorização esteja preenchida (ver
 [Resolução de datas](#resolução-de-datas)).
 
-| Método `client.rira.*`                    | Status enviado           | Exige data de agendamento? |
-|------------------------------------------|--------------------------|----------------------------|
-| `criar_documento_pending`                 | `pending`                | Não                        |
-| `criar_documento_booked`                  | `booked`                 | **Sim**                    |
-| `criar_documento_attended`                | `attended`               | **Sim**                    |
-| `criar_documento_returned_to_requester`   | `returned-to-requester`  | Não                        |
+| `status_rira`            | Exige data de agendamento? |
+|--------------------------|----------------------------|
+| `pending`                | Não                        |
+| `booked`                 | **Sim**                    |
+| `attended`               | **Sim**                    |
+| `returned-to-requester`  | Não                        |
 
 Sequência típica: `pending` → `booked` → `attended`, cada envio substituindo o
 anterior (ver [Lógica de substituição](#lógica-de-substituição-relatesto)).
@@ -180,36 +171,60 @@ dados = RiraDocumentData(
 
 async def enviar():
     async with await RndsClient.create() as client:
-        id_rnds = await client.rira.criar_documento_pending(dados)
-        return id_rnds  # ex.: "1a2b3c4d-...."
+        resultado = await client.rira.enviar_rira(
+            dados, "solicitacao-42", status_rira="pending"
+        )
+        return resultado.id_rnds_bundle  # ex.: "1a2b3c4d-...."
 ```
 
-| Método                                                | Retorno       | Descrição                                                                 |
-|------------------------------------------------------|---------------|------------------------------------------------------------------------|
-| `await criar_documento_pending(dados)`                | `str`         | Envia o documento com status `pending`. Retorna o `id_rnds`.          |
-| `await criar_documento_booked(dados)`                 | `str`         | Envia com status `booked` (agendado).                                 |
-| `await criar_documento_attended(dados)`               | `str`         | Envia com status `attended` (atendido).                               |
-| `await criar_documento_returned_to_requester(dados)`  | `str`         | Envia com status `returned-to-requester` (devolvido ao solicitante).  |
-| `await get_documento(id_rnds)`                        | `dict`        | Consulta o documento na RNDS (com retry). `{}` se a resposta for vazia. Não toca o banco local. |
-| `await deletar_documento(id_rnds)`                    | `None`        | Remove o documento na RNDS (sem retry). **Não** remove o registro local — ver [Lógica de substituição](#lógica-de-substituição-relatesto). |
-| `dump_bundle_json(dados, composition_status, id_rnds_anterior=None)` | `str` | Monta o Bundle e devolve o JSON indentado **sem enviar** (debug/inspeção). Síncrono; exige as variáveis `RIRA_*`. Não consulta o banco — passe `id_rnds_anterior` para simular a substituição. |
+| Método                                                                                                              | Retorno                    | Descrição                                                                                                                                    |
+|-------------------------------------------------------------------------------------------------------------------|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `await enviar_rira(dados, identificador_local, *, status_rira, identifier_system=None, predecessor_composition_id=None)` | `ResultadoEnvioRira`       | Monta o Bundle, envia e devolve o [resultado](#resultado-resultadoenviorira). `identificador_local` vira o `identifier.value` do Bundle. Passe `predecessor_composition_id` para substituir um documento anterior. |
+| `await consultar_rira(identifier_system, identifier_value)`                                                        | `list[ResultadoEnvioRira]` | Consulta por `GET .../identifier?system=&value=&docType=RA` (manual §8.2). 404 / resposta vazia → `[]`.                                        |
+| `await get_documento(id_rnds)`                                                                                    | `dict`                     | Consulta o documento na RNDS (com retry). `{}` se a resposta for vazia.                                                                       |
+| `await deletar_documento(id_rnds)`                                                                                | `None`                     | Remove o documento na RNDS (sem retry).                                                                                                       |
+| `dump_bundle_json(dados, composition_status, predecessor_composition_id=None)`                                     | `str`                      | Monta o Bundle e devolve o JSON indentado **sem enviar** (debug/inspeção). Síncrono; exige as variáveis `RIRA_*`.                             |
 
 Todos os métodos são `async`, exceto `dump_bundle_json`.
+
+`status_rira` aceita `pending`, `booked`, `attended`, `returned-to-requester`;
+qualquer outro valor levanta `ValueError`.
+
+---
+
+## Resultado: `ResultadoEnvioRira`
+
+`dataclass` congelado (`rnds_client.rira.results`), devolvido por `enviar_rira` e
+por cada item de `consultar_rira`:
+
+| Campo                 | Tipo          | Descrição                                                                                       |
+|-----------------------|---------------|-----------------------------------------------------------------------------------------------|
+| `http_status`         | `int`         | Status HTTP da resposta (ex.: `201`).                                                          |
+| `location_rnds`       | `str \| None`  | Header `Location` **bruto** (URL completa do Bundle criado), sem truncar.                       |
+| `id_rnds_bundle`      | `str \| None`  | Id do Bundle na RNDS, lido do corpo FHIR da resposta (ou do `Location`).                        |
+| `id_rnds_composition` | `str \| None`  | Id da `Composition` — lido do corpo da resposta ou por `GET Bundle/{id}`. É o alvo do `relatesTo` do próximo envio. |
+| `codigo_erro`         | `str \| None`  | Preenchido só em cenários de erro tratados sem exceção.                                         |
+| `mensagem_sanitizada` | `str \| None`  | Mensagem de erro já sanitizada (sem dado clínico).                                              |
+
+Para a substituição, guarde `id_rnds_composition` e passe-o como
+`predecessor_composition_id` no envio seguinte.
 
 ---
 
 ## Invariantes e validações
 
-Checadas ao montar o Bundle. A falha chega ao chamador como
-`pydantic.ValidationError` com a mensagem do RIRA embutida — ver
-[Tratamento de erros](#tratamento-de-erros).
+Checadas ao montar o Bundle. A falha é convertida por `enviar_rira` em
+`ErroRiraRejeitado(codigo="completude")` — ver
+[Tratamento de erros](#tratamento-de-erros). Ao usar `dump_bundle_json`
+diretamente, a falha chega como `pydantic.ValidationError` com a mensagem do RIRA
+embutida.
 
 ### 1. Datas obrigatórias em `booked` / `attended`
 
-`criar_documento_booked` e `criar_documento_attended` exigem `data_agendamento`
-**ou** `data_autorizacao` preenchida em `RiraDocumentData`.
+`status_rira` `booked` e `attended` exigem `data_agendamento` **ou**
+`data_autorizacao` preenchida em `RiraDocumentData`.
 
-Mensagem (dentro do `ValidationError`):
+Mensagem:
 
 ```
 status 'booked' exige start e end (invariante FHIR Appointment).
@@ -221,7 +236,7 @@ Preencha data_agendamento ou data_autorizacao em RiraDocumentData.
 Se os dois primeiros dígitos do código SIGTAP forem `03` ou `04`
 (procedimentos clínicos / cirúrgicos), `cbo_executante` é obrigatório.
 
-Mensagem (dentro do `ValidationError`):
+Mensagem:
 
 ```
 CBO obrigatório para procedimentos SIGTAP do grupo 03.
@@ -232,64 +247,64 @@ Preencha cbo_executante em RiraDocumentData.
 
 ## Lógica de substituição (`relatesTo`)
 
-O módulo guarda **um** documento por `id_local`. A cada envio bem-sucedido do
-mesmo `id_local`, o novo documento **substitui** o anterior na RNDS; o primeiro
-envio não substitui nada. `id_local` distintos são independentes.
+A biblioteca **não guarda estado**. A cadeia é responsabilidade do chamador:
 
-Sequência típica (mesmo `id_local` a cada etapa):
+- O `identifier.value` do Bundle é o `identificador_local` passado a `enviar_rira`.
+  Envios com o mesmo valor são a mesma regulação; valores distintos são
+  independentes.
+- O **primeiro** envio de uma regulação não passa `predecessor_composition_id` —
+  não gera `Composition.relatesTo`.
+- Cada envio seguinte passa `predecessor_composition_id` = o
+  `id_rnds_composition` devolvido pelo envio anterior. A lib gera
+  `relatesTo.code = "replaces"`, `targetReference = "Composition/<id>"`.
 
 ```python
-dados = RiraDocumentData(id_local="solicitacao-42", ...)
-
-await client.rira.criar_documento_pending(dados)
+r1 = await client.rira.enviar_rira(dados, "solicitacao-42", status_rira="pending")
 # ... regulação avança; preencha data_agendamento em `dados` ...
-await client.rira.criar_documento_booked(dados)    # substitui o pending
+r2 = await client.rira.enviar_rira(
+    dados, "solicitacao-42", status_rira="booked",
+    predecessor_composition_id=r1.id_rnds_composition,
+)
 # ... paciente atendido; preencha data_atendimento ...
-await client.rira.criar_documento_attended(dados)  # substitui o booked
+r3 = await client.rira.enviar_rira(
+    dados, "solicitacao-42", status_rira="attended",
+    predecessor_composition_id=r2.id_rnds_composition,
+)
 ```
 
-> **Atenção:** `deletar_documento` remove o documento na RNDS mas **não** apaga o
-> registro local. Um `criar_documento_*` posterior para o mesmo `id_local` ainda
-> tentará substituir o documento apagado. Se o fluxo previr exclusão, limpe o
-> registro local por conta própria.
-
----
-
-## Persistência local: `RNDSDocumentRecord`
-
-O módulo mantém uma tabela `RNDSDocumentRecord` (app `rnds_rira`) com **uma linha
-por `id_local`**: guarda o `id_rnds` e o último status enviados, para saber qual
-documento substituir no envio seguinte.
-
-Falhas ao ler/gravar essa tabela são **engolidas e apenas logadas** — não
-interrompem o envio à RNDS, mas a substituição do próximo envio pode ficar
-incompleta. Já uma falha no envio em si propaga ao chamador.
+O manual §8.3 prevê a substituição "uma única vez" por documento; cadeias mais
+longas (dias sucessivos) dependem de homologação — a lib não impõe esse limite,
+o consumidor decide.
 
 ---
 
 ## Log de depuração
 
 - Request/response de cada chamada à RNDS: [Modo debug](../../../README.md#modo-debug), no README.
+  O corpo do Bundle e o corpo da resposta **não** são logados — só `method`, `url`,
+  `status`, `body_len` e `location`.
 - Inspecionar o Bundle sem enviar: [`dump_bundle_json`](#api-clientrira).
 
 ---
 
 ## Tratamento de erros
 
-| Exceção                | Origem                                                                    |
-|-----------------------|-------------------------------------------------------------------------|
-| `pydantic.ValidationError` | Invariante do RIRA violada ao montar o Bundle (datas de `booked`/`attended` ou CBO nos grupos SIGTAP 03/04). A mensagem do RIRA vem em `str(exc)`. **Capture `pydantic.ValidationError`**, não `RiraValidationError` — o Pydantic embrulha a exceção do validator. |
-| `RndsSubmissionError` | Envio sem retorno de ID (RNDS respondeu sem o header `Location`). |
-| `KeyError`            | Variável `RIRA_*` ausente no ambiente (na 1ª chamada de envio ou `dump_bundle_json`). |
-| `httpx.HTTPStatusError` / `httpx.HTTPError` | Erros de transporte / status HTTP da RNDS.        |
+`enviar_rira` normaliza tudo em três exceções (`from rnds_client.rira`):
 
-`RndsSubmissionError` e `RiraValidationError` são reexportadas em `rnds_client`.
+| Exceção                | Quando                                                                                              | Atributos                       |
+|-----------------------|--------------------------------------------------------------------------------------------------|---------------------------------|
+| `ErroRiraTransitorio` | Timeout/DNS/conexão antes da resposta; HTTP `408`, `429`, `5xx`. Vale re-tentar.                    | `codigo`, `retry_after \| None`  |
+| `ErroRiraRejeitado`   | HTTP `4xx` funcional; invariante local violada (`codigo="completude"`). Não adianta re-tentar igual. | `codigo`, `http_status \| None`  |
+| `ResultadoRiraIncerto`| POST enviado mas resposta perdida (timeout/queda após o POST, ou aceite sem `Location` nem corpo). Concilie por `identifier` antes de reenviar. | `codigo`                        |
+
+`RndsSubmissionError` e `RiraValidationError` seguem reexportadas em `rnds_client`
+(a segunda é a exceção crua do validator, vista só via `dump_bundle_json`).
 
 ---
 
 ## Atualização de versão
 
-Entregue na versão **`0.2.0`** do `3s-rnds-client` (mudança **minor**,
-retrocompatível). Passos de instalação: [Instalação e configuração no
-Django](#instalação-e-configuração-no-django). Changelog:
+Contrato **`0.3.0`** — *stateless*. Mudanças em relação à `0.2.0` (nunca
+integrada por nenhum consumidor) e o passo a passo estão em
+[`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md). Changelog:
 [README, seção "Versão"](../../../README.md#versao).
