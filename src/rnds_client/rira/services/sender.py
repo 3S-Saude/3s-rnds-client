@@ -11,12 +11,14 @@ from httpx import (
     ConnectTimeout,
     HTTPStatusError,
     PoolTimeout,
+    ReadError,
     ReadTimeout,
     RemoteProtocolError,
     Response,
     TransportError,
     WriteTimeout,
 )
+from pydantic import ValidationError as PydanticValidationError
 
 from rnds_client.rira.codesystems import FULLURL_APPOINTMENT, FULLURL_CONDITION, FULLURL_SERVICE_REQUEST
 from rnds_client.rira.exceptions import (
@@ -43,8 +45,9 @@ _APPOINTMENT_STATUS_MAP = {
     "attended": "fulfilled",
 }
 
-_STATUS_TRANSITORIOS = {408, 429, 500, 502, 503, 504}
+_STATUS_RETENTAVEIS_4XX = {408, 429}
 _TIMEOUT_EXC = (ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout)
+_LEITURA_RESPOSTA_EXC = (ReadTimeout, ReadError, RemoteProtocolError)
 
 
 def montar_bundle(
@@ -88,6 +91,17 @@ def extrair_id_rnds(location_header: str) -> str:
     return location_header.rstrip("/").split("/")[-1]
 
 
+def _referencia_fhir(ref: str) -> tuple[str | None, str | None]:
+    partes = [p for p in (ref or "").strip("/").split("/") if p]
+    if "_history" in partes:
+        partes = partes[: partes.index("_history")]
+    if len(partes) >= 2:
+        return partes[-2], partes[-1]
+    if len(partes) == 1:
+        return None, partes[0]
+    return None, None
+
+
 def extrair_ids_resposta(response: Response) -> tuple[str | None, str | None]:
     try:
         corpo: Any = response.json()
@@ -106,10 +120,12 @@ def extrair_ids_resposta(response: Response) -> tuple[str | None, str | None]:
         if isinstance(recurso, dict) and recurso.get("resourceType") == "Composition":
             composition_id = recurso.get("id")
         resposta_entry = entry.get("response")
-        if isinstance(resposta_entry, dict) and not bundle_id:
-            loc = resposta_entry.get("location", "")
-            if loc:
-                bundle_id = loc.rstrip("/").split("/")[-1]
+        if isinstance(resposta_entry, dict):
+            tipo, ident = _referencia_fhir(resposta_entry.get("location", ""))
+            if ident and tipo == "Composition" and not composition_id:
+                composition_id = ident
+            elif ident and tipo in (None, "Bundle") and not bundle_id:
+                bundle_id = ident
     return bundle_id, composition_id
 
 
@@ -129,29 +145,40 @@ def _retry_after_segundos(response: Response | None) -> int | None:
         return None
 
 
-def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Exception:
+def _erro_de_completude(exc: Exception) -> RiraValidationError | None:
     if isinstance(exc, RiraValidationError):
-        return ErroRiraRejeitado(str(exc), codigo="completude")
+        return exc
+    for candidata in (getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if isinstance(candidata, RiraValidationError):
+            return candidata
+    if isinstance(exc, PydanticValidationError):
+        return RiraValidationError(str(exc))
+    return None
+
+
+def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Exception:
+    completude = _erro_de_completude(exc)
+    if completude is not None:
+        return ErroRiraRejeitado(str(completude), codigo="completude")
+
+    if isinstance(exc, KeyError):
+        return ErroRiraRejeitado(f"Configuração RIRA ausente: {exc}", codigo="configuracao")
 
     if isinstance(exc, HTTPStatusError):
         status = exc.response.status_code
-        if status in _STATUS_TRANSITORIOS:
+        if status in _STATUS_RETENTAVEIS_4XX or 500 <= status < 600:
             return ErroRiraTransitorio(
                 str(exc), codigo=f"http_{status}", retry_after=_retry_after_segundos(exc.response)
             )
-        return ErroRiraRejeitado(str(exc), codigo="http_4xx", http_status=status)
+        return ErroRiraRejeitado(str(exc), codigo=f"http_{status}", http_status=status)
+
+    if apos_post and isinstance(exc, _LEITURA_RESPOSTA_EXC):
+        return ResultadoRiraIncerto(str(exc), codigo="resposta_perdida")
 
     if isinstance(exc, _TIMEOUT_EXC):
-        if apos_post:
-            return ResultadoRiraIncerto(str(exc), codigo="resposta_perdida")
         return ErroRiraTransitorio(str(exc), codigo="timeout")
 
-    if isinstance(exc, RemoteProtocolError):
-        if apos_post:
-            return ResultadoRiraIncerto(str(exc), codigo="resposta_perdida")
-        return ErroRiraTransitorio(str(exc), codigo="conexao")
-
-    if isinstance(exc, (ConnectError, TransportError)):
+    if isinstance(exc, (ConnectError, TransportError, RemoteProtocolError)):
         return ErroRiraTransitorio(str(exc), codigo="conexao")
 
     return ErroRiraRejeitado(str(exc), codigo="desconhecido")

@@ -29,6 +29,10 @@ from rnds_client.rira.services.sender import (  # noqa: E402
 from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
 
 
+def _read_error():
+    return httpx.ReadError("conexao caiu ao ler", request=_req())
+
+
 def _req():
     return httpx.Request("POST", "https://x/api/fhir/r4/Bundle")
 
@@ -66,6 +70,46 @@ class TestClassificacaoErro(unittest.TestCase):
         self.assertIsInstance(erro, ErroRiraRejeitado)
         self.assertEqual(erro.codigo, "completude")
 
+    def test_completude_mesmo_embrulhada_pelo_pydantic(self):
+        settings = RiraFhirSettings.from_environment()
+        try:
+            montar_bundle(_dados(sigtap="0301010153"), settings, "pending")
+            self.fail("esperava falha de completude")
+        except Exception as exc:  # noqa: BLE001
+            erro = classificar_erro_http(exc)
+        self.assertIsInstance(erro, ErroRiraRejeitado)
+        self.assertEqual(erro.codigo, "completude")
+
+    def test_config_ausente_e_rejeitada_como_configuracao(self):
+        erro = classificar_erro_http(KeyError("RIRA_COMP_PROFILE"))
+        self.assertIsInstance(erro, ErroRiraRejeitado)
+        self.assertEqual(erro.codigo, "configuracao")
+
+    def test_todo_5xx_e_transitorio(self):
+        for status in (500, 501, 502, 503, 504, 507, 508, 599):
+            erro = classificar_erro_http(_status_error(status))
+            self.assertIsInstance(erro, ErroRiraTransitorio, status)
+            self.assertEqual(erro.codigo, f"http_{status}")
+
+    def test_4xx_nao_retentavel_mantem_status_no_codigo(self):
+        erro = classificar_erro_http(_status_error(409))
+        self.assertIsInstance(erro, ErroRiraRejeitado)
+        self.assertEqual(erro.codigo, "http_409")
+        self.assertEqual(erro.http_status, 409)
+
+    def test_read_error_apos_post_e_incerto(self):
+        erro = classificar_erro_http(_read_error(), apos_post=True)
+        self.assertIsInstance(erro, ResultadoRiraIncerto)
+
+    def test_read_error_antes_do_post_e_transitorio(self):
+        erro = classificar_erro_http(_read_error())
+        self.assertIsInstance(erro, ErroRiraTransitorio)
+        self.assertEqual(erro.codigo, "conexao")
+
+    def test_connect_error_apos_post_continua_transitorio(self):
+        erro = classificar_erro_http(httpx.ConnectError("sem rota", request=_req()), apos_post=True)
+        self.assertIsInstance(erro, ErroRiraTransitorio)
+
 
 class TestExtrairIdsResposta(unittest.TestCase):
     def test_bundle_id_e_composition_id_sao_distintos(self):
@@ -83,21 +127,44 @@ class TestExtrairIdsResposta(unittest.TestCase):
         self.assertEqual(composition_id, "a1a8-c0m1")
         self.assertNotEqual(bundle_id, composition_id)
 
+    def test_transaction_response_separa_bundle_de_composition(self):
+        corpo = {
+            "resourceType": "Bundle",
+            "type": "transaction-response",
+            "entry": [
+                {"response": {"location": "Composition/c0m1/_history/1"}},
+                {"response": {"location": "Bundle/b0b0/_history/1"}},
+            ],
+        }
+        resp = httpx.Response(201, json=corpo, request=_req())
+        bundle_id, composition_id = extrair_ids_resposta(resp)
+        self.assertEqual(bundle_id, "b0b0")
+        self.assertEqual(composition_id, "c0m1")
+
 
 class _BaseClientStub:
-    def __init__(self, response):
+    def __init__(self, response, *, retry_response=None, headers_exc=None):
         self._response = response
+        self._retry_response = retry_response if retry_response is not None else response
+        self._headers_exc = headers_exc
         self.chamadas = []
 
     def build_service_url(self, path):
         return f"https://x/api/{path}"
+
+    async def headers(self, force_refresh=False):
+        if self._headers_exc is not None:
+            raise self._headers_exc
+        return {"X-Authorization-Server": "Bearer t"}
 
     async def request(self, method, url, **kwargs):
         self.chamadas.append((method, url, kwargs))
         return self._response
 
     async def request_with_retry(self, method, url, **kwargs):
-        return self._response
+        if isinstance(self._retry_response, Exception):
+            raise self._retry_response
+        return self._retry_response
 
 
 def _dados(**kwargs):
@@ -176,6 +243,89 @@ class TestEnviarRira(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="faltou"))
 
+    def test_falha_no_get_de_apoio_nao_derruba_envio_bem_sucedido(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        post_ok = httpx.Response(
+            201,
+            headers={"location": "https://x/api/fhir/r4/Bundle/4a31-i0b0"},
+            request=_req(),
+        )
+        stub = _BaseClientStub(post_ok, retry_response=httpx.ReadTimeout("get falhou", request=_req()))
+        cap = RiraCapability(stub)
+        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertEqual(resultado.http_status, 201)
+        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
+        self.assertIsNone(resultado.id_rnds_composition)
+
+    def test_timeout_de_autenticacao_e_pre_post_nao_incerto(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        stub = _BaseClientStub(
+            httpx.Response(201, request=_req()),
+            headers_exc=httpx.ConnectTimeout("token endpoint fora", request=_req()),
+        )
+        cap = RiraCapability(stub)
+        with self.assertRaises(ErroRiraTransitorio):
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertEqual(stub.chamadas, [])
+
+    def test_refresh_apos_401_que_falha_nao_e_incerto(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        eventos = []
+
+        class _Stub401:
+            def build_service_url(self, path):
+                return f"https://x/api/{path}"
+
+            async def headers(self, force_refresh=False):
+                eventos.append(("headers", force_refresh))
+                if force_refresh:
+                    raise httpx.ConnectTimeout("token endpoint fora", request=_req())
+                return {}
+
+            async def request(self, method, url, **kwargs):
+                eventos.append(("request", url))
+                resp = httpx.Response(401, request=_req())
+                raise httpx.HTTPStatusError("401", request=_req(), response=resp)
+
+        cap = RiraCapability(_Stub401())
+        with self.assertRaises(ErroRiraTransitorio) as ctx:
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertNotIsInstance(ctx.exception, ResultadoRiraIncerto)
+        self.assertIn(("headers", True), eventos)
+        self.assertEqual(sum(1 for e in eventos if e[0] == "request"), 1)
+
+    def test_refresh_apos_401_ok_reenvia_e_conclui(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        respostas = [
+            httpx.HTTPStatusError("401", request=_req(), response=httpx.Response(401, request=_req())),
+            httpx.Response(201, headers={"location": "https://x/Bundle/ok"}, request=_req()),
+        ]
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/api/{path}"
+
+            async def headers(self, force_refresh=False):
+                return {}
+
+            async def request(self, method, url, **kwargs):
+                item = respostas.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return None
+
+        cap = RiraCapability(_Stub())
+        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertEqual(resultado.http_status, 201)
+        self.assertEqual(resultado.id_rnds_bundle, "ok")
+
 
 def _service_request(bundle: dict) -> dict:
     for entry in bundle["entry"]:
@@ -219,11 +369,16 @@ class TestConsultarRira(unittest.TestCase):
     def _resposta_identifier(self):
         corpo = {
             "resourceType": "Bundle",
+            "type": "searchset",
             "entry": [
                 {
                     "resource": {
-                        "resourceType": "Composition",
-                        "id": "a1a8-c0m1",
+                        "resourceType": "Bundle",
+                        "id": "doc-b0b0",
+                        "entry": [
+                            {"resource": {"resourceType": "Composition", "id": "doc-c0m1"}},
+                            {"resource": {"resourceType": "Appointment", "id": "zzz"}},
+                        ],
                     }
                 }
             ],
@@ -258,7 +413,9 @@ class TestConsultarRira(unittest.TestCase):
             {"system": "http://ns/BRRNDS-9999", "value": "item-1", "docType": "RA"},
         )
         self.assertEqual(len(resultados), 1)
-        self.assertEqual(resultados[0].id_rnds_composition, "a1a8-c0m1")
+        self.assertEqual(resultados[0].id_rnds_bundle, "doc-b0b0")
+        self.assertEqual(resultados[0].id_rnds_composition, "doc-c0m1")
+        self.assertNotEqual(resultados[0].id_rnds_bundle, resultados[0].id_rnds_composition)
 
     def test_consulta_sem_corpo_devolve_lista_vazia(self):
         from rnds_client.capabilities.rira import RiraCapability

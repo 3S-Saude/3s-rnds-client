@@ -84,14 +84,16 @@ class RndsBaseClient:
             headers["Authorization"] = self._settings.cns_authorization
         return headers
 
-    async def request(self, method: str, url: str, **kwargs: Any) -> Response:
+    async def request(
+        self, method: str, url: str, *, retry_on_401: bool = True, **kwargs: Any
+    ) -> Response:
         user_headers = dict(kwargs.pop("headers", {}))
 
         request_headers = {**await self.headers(), **user_headers}
         self._log_request(method, url, request_headers, kwargs)
         response = await self._http_client.request(method, url, headers=request_headers, **kwargs)
 
-        if response.status_code == 401:
+        if response.status_code == 401 and retry_on_401:
             request_headers = {**await self.headers(force_refresh=True), **user_headers}
             self._log_request(method, url, request_headers, kwargs)
             response = await self._http_client.request(method, url, headers=request_headers, **kwargs)
