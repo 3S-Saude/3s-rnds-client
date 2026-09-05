@@ -46,6 +46,7 @@ class ServiceRequest(BaseModel):
         settings: RiraFhirSettings,
         condition_ref: str,
         timestamp: str,
+        composition_status: str = "pending",
     ) -> ServiceRequest:
         performer_type = (
             CodeableConcept(coding=[Coding(system=CBO_SYSTEM, code=dados.cbo_executante)])
@@ -60,6 +61,7 @@ class ServiceRequest(BaseModel):
         occurrence = dados.data_agendamento or dados.data_atendimento
         return cls(
             meta=Meta(lastUpdated=timestamp, profile=[settings.sr_profile]),
+            status="completed" if composition_status == "attended" else "active",
             category=[CodeableConcept(coding=[Coding(system=MODALIDADE_SYSTEM, code=dados.modalidade)])],
             priority=dados.carater,
             code=CodeableConcept(coding=[Coding(system=SIGTAP_SYSTEM, code=dados.sigtap)]),

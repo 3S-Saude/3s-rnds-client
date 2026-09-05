@@ -1,9 +1,5 @@
-import asyncio
 import os
 import unittest
-
-import django
-from django.conf import settings as dj
 
 _RIRA_ENV = {
     "RIRA_NAMING_SYSTEM_ID": "9999",
@@ -14,23 +10,6 @@ _RIRA_ENV = {
     "RIRA_COND_PROFILE": "http://test/cond",
 }
 os.environ.update(_RIRA_ENV)
-dj.configure(
-    INSTALLED_APPS=["django.contrib.contenttypes", "django.contrib.auth", "rnds_client.rira"],
-    DATABASES={
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            # cache=shared: as funcoes async de sender.py rodam em outra thread
-            # (via sync_to_async); um ":memory:" isolado nao seria visto por ela.
-            "NAME": "file:rira_test?mode=memory&cache=shared",
-            "OPTIONS": {"uri": True},
-        }
-    },
-)
-django.setup()
-
-from django.core.management import call_command  # noqa: E402
-
-call_command("migrate", "--run-syncdb", verbosity=0)
 
 from rnds_client.rira.codesystems import (  # noqa: E402
     CID10_SYSTEM,
@@ -41,11 +20,7 @@ from rnds_client.rira.codesystems import (  # noqa: E402
     TIPO_DOCUMENTO_SYSTEM,
 )
 from rnds_client.rira.schemas.rira_document import RiraDocumentData  # noqa: E402
-from rnds_client.rira.services.sender import (  # noqa: E402
-    buscar_id_rnds_anterior,
-    montar_bundle,
-    salvar_envio,
-)
+from rnds_client.rira.services.sender import montar_bundle  # noqa: E402
 from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
 
 _SETTINGS = RiraFhirSettings.from_environment()
@@ -69,8 +44,8 @@ def _dados(**kwargs) -> RiraDocumentData:
 
 def _bundle(**kwargs) -> dict:
     status = kwargs.pop("_status", "pending")
-    id_rnds_anterior = kwargs.pop("_id_rnds_anterior", None)
-    return montar_bundle(_dados(**kwargs), _SETTINGS, status, id_rnds_anterior)
+    predecessor = kwargs.pop("_predecessor_composition_id", None)
+    return montar_bundle(_dados(**kwargs), _SETTINGS, status, predecessor)
 
 
 def _comp(**kwargs) -> dict:
@@ -83,14 +58,6 @@ def _resource(resource_type: str, **kwargs) -> dict:
         for e in _bundle(**kwargs)["entry"]
         if e["resource"]["resourceType"] == resource_type
     )
-
-
-def _salvar_envio_sync(id_local: str, id_rnds: str, status: str) -> None:
-    asyncio.run(salvar_envio(id_local, id_rnds, status))
-
-
-def _buscar_id_rnds_anterior_sync(id_local: str) -> str | None:
-    return asyncio.run(buscar_id_rnds_anterior(id_local))
 
 
 class TestEstruturaBundle(unittest.TestCase):
@@ -112,10 +79,10 @@ class TestEstruturaBundle(unittest.TestCase):
 
     def test_fullurls_na_ordem_correta(self):
         urls = [e["fullUrl"] for e in self.bundle["entry"]]
-        self.assertEqual(urls[0], "urn:uuid:transient-0")  # Composition
-        self.assertEqual(urls[1], "urn:uuid:transient-1")  # Appointment
-        self.assertEqual(urls[2], "urn:uuid:transient-2")  # ServiceRequest
-        self.assertEqual(urls[3], "urn:uuid:transient-3")  # Condition
+        self.assertEqual(urls[0], "urn:uuid:transient-0")
+        self.assertEqual(urls[1], "urn:uuid:transient-1")
+        self.assertEqual(urls[2], "urn:uuid:transient-2")
+        self.assertEqual(urls[3], "urn:uuid:transient-3")
 
     def test_resource_types_das_entries(self):
         types = [e["resource"]["resourceType"] for e in self.bundle["entry"]]
@@ -138,8 +105,6 @@ class TestCamposDeNegocio(unittest.TestCase):
         self.assertEqual(comp["subject"]["identifier"]["system"], INDIVIDUO_SYSTEM)
 
     def test_paciente_cns_usa_system_fixo_individuo(self):
-        # O manual (item 8.1, comentário sobre "subject") define que o system e
-        # fixo independentemente do valor ser CPF ou CNS.
         comp = _comp(id_paciente="123456789012345")
         self.assertEqual(comp["subject"]["identifier"]["system"], INDIVIDUO_SYSTEM)
 
@@ -188,8 +153,6 @@ class TestCamposDeNegocio(unittest.TestCase):
 class TestAppointmentExigeDatas(unittest.TestCase):
 
     def test_pending_nao_exige_data_agendamento(self):
-        # exclude_none=True (usado em todo o bundle para gerar FHIR valido) remove
-        # a chave quando o valor e None, entao ela nao aparece no dict.
         appointment = _resource("Appointment", id_local="appt-pending")
         self.assertNotIn("start", appointment)
 
@@ -214,17 +177,15 @@ class TestAppointmentExigeDatas(unittest.TestCase):
 
 class TestLogicaSubstituicao(unittest.TestCase):
 
-    def test_primeiro_envio_sem_relates_to(self):
+    def test_sem_predecessor_nao_tem_relates_to(self):
         comp = _comp(id_local="sub-zero")
         self.assertNotIn("relatesTo", comp)
 
-    def test_segundo_envio_tem_relates_to(self):
-        _salvar_envio_sync("sub-dois", "uuid-rnds-anterior-abc", "pending")
-        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-dois")
+    def test_com_predecessor_tem_relates_to_replaces(self):
         comp = _comp(
             id_local="sub-dois",
             _status="booked",
-            _id_rnds_anterior=id_rnds_anterior,
+            _predecessor_composition_id="a1a8-c0m1",
             data_agendamento=_DATA_AGENDAMENTO,
         )
         self.assertIn("relatesTo", comp)
@@ -232,29 +193,14 @@ class TestLogicaSubstituicao(unittest.TestCase):
         self.assertEqual(relates["code"], "replaces")
         self.assertEqual(
             relates["targetReference"]["reference"],
-            "Composition/uuid-rnds-anterior-abc",
+            "Composition/a1a8-c0m1",
         )
 
-    def test_relates_to_aponta_para_ultimo_id_rnds(self):
-        _salvar_envio_sync("sub-tres", "primeiro-id", "pending")
-        _salvar_envio_sync("sub-tres", "segundo-id", "booked")  # atualiza o mesmo id_local
-        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-tres")
-        comp = _comp(
-            id_local="sub-tres",
-            _status="attended",
-            _id_rnds_anterior=id_rnds_anterior,
-            data_agendamento=_DATA_AGENDAMENTO,
-        )
-        ref = comp["relatesTo"][0]["targetReference"]["reference"]
-        self.assertEqual(ref, "Composition/segundo-id")
-
-    def test_ids_locais_distintos_nao_interferem(self):
-        _salvar_envio_sync("sub-outro", "id-de-outro-item", "pending")
-        id_rnds_anterior = _buscar_id_rnds_anterior_sync("sub-sem-historico")
+    def test_predecessor_nulo_nao_gera_relates_to(self):
         comp = _comp(
             id_local="sub-sem-historico",
             _status="booked",
-            _id_rnds_anterior=id_rnds_anterior,
+            _predecessor_composition_id=None,
             data_agendamento=_DATA_AGENDAMENTO,
         )
         self.assertNotIn("relatesTo", comp)
