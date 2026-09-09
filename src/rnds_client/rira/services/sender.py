@@ -20,6 +20,7 @@ from httpx import (
 )
 from pydantic import ValidationError as PydanticValidationError
 
+from rnds_client.exceptions import RndsAuthenticationError, RndsConfigurationError
 from rnds_client.rira.codesystems import FULLURL_APPOINTMENT, FULLURL_CONDITION, FULLURL_SERVICE_REQUEST
 from rnds_client.rira.exceptions import (
     ErroRiraRejeitado,
@@ -47,7 +48,7 @@ _APPOINTMENT_STATUS_MAP = {
 
 _STATUS_RETENTAVEIS_4XX = {408, 429}
 _TIMEOUT_EXC = (ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout)
-_LEITURA_RESPOSTA_EXC = (ReadTimeout, ReadError, RemoteProtocolError)
+_POS_POST_INCERTO_EXC = (ReadTimeout, ReadError, RemoteProtocolError, WriteTimeout)
 
 
 def montar_bundle(
@@ -88,7 +89,8 @@ def extrair_id_rnds(location_header: str) -> str:
         raise RndsSubmissionError(
             "Resposta da RNDS nao contem o header 'location' com o ID do documento criado."
         )
-    return location_header.rstrip("/").split("/")[-1]
+    _, ident = _referencia_fhir(location_header)
+    return ident or location_header.rstrip("/").split("/")[-1]
 
 
 def _referencia_fhir(ref: str) -> tuple[str | None, str | None]:
@@ -172,7 +174,7 @@ def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Excepti
             )
         return ErroRiraRejeitado(str(exc), codigo=f"http_{status}", http_status=status)
 
-    if apos_post and isinstance(exc, _LEITURA_RESPOSTA_EXC):
+    if apos_post and isinstance(exc, _POS_POST_INCERTO_EXC):
         return ResultadoRiraIncerto(str(exc), codigo="resposta_perdida")
 
     if isinstance(exc, _TIMEOUT_EXC):
@@ -180,5 +182,11 @@ def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Excepti
 
     if isinstance(exc, (ConnectError, TransportError, RemoteProtocolError)):
         return ErroRiraTransitorio(str(exc), codigo="conexao")
+
+    if isinstance(exc, RndsConfigurationError):
+        return ErroRiraRejeitado(str(exc), codigo="configuracao")
+
+    if isinstance(exc, RndsAuthenticationError):
+        return ErroRiraRejeitado(str(exc), codigo="autenticacao")
 
     return ErroRiraRejeitado(str(exc), codigo="desconhecido")

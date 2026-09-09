@@ -43,9 +43,9 @@ class RiraCapability:
         dados = _com_id_local(dados, identificador_local)
 
         try:
-            settings = RiraFhirSettings.from_environment()
-            if identifier_system:
-                settings = _com_identifier_system(settings, identifier_system)
+            settings = RiraFhirSettings.from_environment(
+                bundle_id_system_override=identifier_system or None
+            )
             bundle_dict = sender.montar_bundle(
                 dados, settings, composition_status, predecessor_composition_id
             )
@@ -131,7 +131,7 @@ class RiraCapability:
 
         try:
             await self._client.headers(force_refresh=True)
-        except HTTPError as exc:
+        except Exception as exc:
             raise sender.classificar_erro_http(exc, apos_post=False) from exc
 
         try:
@@ -176,10 +176,6 @@ def _ids_do_documento_consulta(item: dict) -> tuple[str | None, str | None]:
             composition_id = recurso.get("id")
             break
     return id_direto, composition_id
-
-
-def _com_identifier_system(settings: RiraFhirSettings, identifier_system: str) -> RiraFhirSettings:
-    return replace(settings, bundle_id_system_override=identifier_system)
 
 
 def _com_id_local(dados: RiraDocumentData, identificador_local: str) -> RiraDocumentData:
