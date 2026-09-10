@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 _APPOINTMENT_STATUS_MAP = {
     "pending": "proposed",
-    "returned-to-requester": "proposed",
+    "returned-to-requester": "waitlist",
     "booked": "booked",
     "attended": "fulfilled",
 }

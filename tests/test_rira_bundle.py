@@ -150,6 +150,45 @@ class TestCamposDeNegocio(unittest.TestCase):
         self.assertEqual(coding["code"], "booked")
 
 
+class TestStatusPorRegulacao(unittest.TestCase):
+
+    _CASOS = {
+        "pending": ("proposed", "active"),
+        "booked": ("booked", "active"),
+        "attended": ("fulfilled", "completed"),
+        "returned-to-requester": ("waitlist", "on-hold"),
+    }
+
+    def _bundle_do_status(self, status: str) -> dict:
+        extra = {}
+        if status in ("booked", "attended"):
+            extra["data_agendamento"] = _DATA_AGENDAMENTO
+        return _bundle(_status=status, id_local=f"item-{status}", **extra)
+
+    def test_appointment_e_service_request_status(self):
+        for status, (appt_esperado, sr_esperado) in self._CASOS.items():
+            with self.subTest(status=status):
+                bundle = self._bundle_do_status(status)
+                appt = next(
+                    e["resource"] for e in bundle["entry"]
+                    if e["resource"]["resourceType"] == "Appointment"
+                )
+                sr = next(
+                    e["resource"] for e in bundle["entry"]
+                    if e["resource"]["resourceType"] == "ServiceRequest"
+                )
+                self.assertEqual(appt["status"], appt_esperado)
+                self.assertEqual(sr["status"], sr_esperado)
+
+    def test_returned_to_requester_dispensa_datas_no_appointment(self):
+        bundle = self._bundle_do_status("returned-to-requester")
+        appt = next(
+            e["resource"] for e in bundle["entry"]
+            if e["resource"]["resourceType"] == "Appointment"
+        )
+        self.assertNotIn("start", appt)
+
+
 class TestAppointmentExigeDatas(unittest.TestCase):
 
     def test_pending_nao_exige_data_agendamento(self):
