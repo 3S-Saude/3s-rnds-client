@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
     from rnds_client.rira.settings import RiraFhirSettings
 
+_STATUS_POR_COMPOSITION = {"attended": "completed", "returned-to-requester": "on-hold"}
+
 
 class ServiceRequest(BaseModel):
     resourceType: str = "ServiceRequest"
@@ -61,7 +63,7 @@ class ServiceRequest(BaseModel):
         occurrence = dados.data_agendamento or dados.data_atendimento
         return cls(
             meta=Meta(lastUpdated=timestamp, profile=[settings.sr_profile]),
-            status="completed" if composition_status == "attended" else "active",
+            status=_STATUS_POR_COMPOSITION.get(composition_status, "active"),
             category=[CodeableConcept(coding=[Coding(system=MODALIDADE_SYSTEM, code=dados.modalidade)])],
             priority=dados.carater,
             code=CodeableConcept(coding=[Coding(system=SIGTAP_SYSTEM, code=dados.sigtap)]),

@@ -201,8 +201,21 @@ Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.3.0` (contrato RIRA *stateless* — ver
+Versao atual: `0.3.1` (contrato RIRA *stateless* — ver
 [docs/rira-evolucao-0.3.0.md](docs/rira-evolucao-0.3.0.md)).
+
+`0.3.1` — correcoes sobre `0.3.0`:
+
+- `returned-to-requester`: `Appointment.status` passa a `waitlist` e
+  `ServiceRequest.status` a `on-hold` (regra `mira-14` da RNDS).
+- `classificar_erro_http`: `WriteTimeout` apos o POST vira `ResultadoRiraIncerto`;
+  falha de autenticacao nao-HTTP no refresh pos-401 vira `ErroRiraRejeitado`.
+- `extrair_id_rnds`: header `Location` versionado (`.../_history/<v>`) preserva o
+  id do Bundle.
+- `RiraFhirSettings.from_environment`: `RIRA_NAMING_SYSTEM_ID` deixa de ser
+  obrigatorio quando o `identifier_system` e passado por chamada.
+
+`0.3.0`:
 
 - Novo modulo/app `rnds_client.rira` para envio e consulta de documentos RIRA.
 - Nova dependencia: `pydantic>=2.0` (schemas FHIR).

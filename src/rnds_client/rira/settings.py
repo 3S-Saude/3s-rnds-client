@@ -14,13 +14,21 @@ class RiraFhirSettings:
     bundle_id_system_override: str | None = None
 
     @classmethod
-    def from_environment(cls) -> "RiraFhirSettings":
+    def from_environment(
+        cls, *, bundle_id_system_override: str | None = None
+    ) -> "RiraFhirSettings":
+        exige_naming = bundle_id_system_override is None
         return cls(
-            naming_system_id=os.environ["RIRA_NAMING_SYSTEM_ID"],
+            naming_system_id=(
+                os.environ["RIRA_NAMING_SYSTEM_ID"]
+                if exige_naming
+                else os.environ.get("RIRA_NAMING_SYSTEM_ID", "")
+            ),
             comp_profile=os.environ["RIRA_COMP_PROFILE"],
             sr_profile=os.environ["RIRA_SR_PROFILE"],
             app_profile=os.environ["RIRA_APP_PROFILE"],
             cond_profile=os.environ["RIRA_COND_PROFILE"],
+            bundle_id_system_override=bundle_id_system_override,
         )
 
     @property

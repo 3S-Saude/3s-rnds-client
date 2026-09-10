@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from unittest import mock
 
 os.environ.update(
     {
@@ -110,6 +111,23 @@ class TestClassificacaoErro(unittest.TestCase):
         erro = classificar_erro_http(httpx.ConnectError("sem rota", request=_req()), apos_post=True)
         self.assertIsInstance(erro, ErroRiraTransitorio)
 
+    def test_write_timeout_apos_post_e_incerto(self):
+        erro = classificar_erro_http(httpx.WriteTimeout("t", request=_req()), apos_post=True)
+        self.assertIsInstance(erro, ResultadoRiraIncerto)
+        self.assertEqual(erro.codigo, "resposta_perdida")
+
+    def test_write_timeout_antes_do_post_e_transitorio(self):
+        erro = classificar_erro_http(httpx.WriteTimeout("t", request=_req()))
+        self.assertIsInstance(erro, ErroRiraTransitorio)
+        self.assertEqual(erro.codigo, "timeout")
+
+    def test_falha_de_auth_nao_http_e_rejeitada_como_autenticacao(self):
+        from rnds_client.exceptions import RndsAuthenticationError
+
+        erro = classificar_erro_http(RndsAuthenticationError("token sem access_token"))
+        self.assertIsInstance(erro, ErroRiraRejeitado)
+        self.assertEqual(erro.codigo, "autenticacao")
+
 
 class TestExtrairIdsResposta(unittest.TestCase):
     def test_bundle_id_e_composition_id_sao_distintos(self):
@@ -205,6 +223,68 @@ class TestEnviarRira(unittest.TestCase):
         )
         self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
         self.assertEqual(resultado.id_rnds_composition, "a1a8-c0m1")
+
+    def test_location_versionado_sem_corpo_preserva_id_do_bundle(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        resp = httpx.Response(
+            201,
+            headers={
+                "location": "https://mg-ehr-services/api/fhir/r4/Bundle/4a31-i0b0/_history/1"
+            },
+            request=_req(),
+        )
+        cap = RiraCapability(_BaseClientStub(resp))
+        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
+
+    def test_identifier_system_por_chamada_dispensa_env_naming_system(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        resp = httpx.Response(
+            201,
+            json={"id": "b1", "entry": [{"resource": {"resourceType": "Composition", "id": "c1"}}]},
+            headers={"location": "https://x/Bundle/b1"},
+            request=_req(),
+        )
+        stub = _BaseClientStub(resp)
+        cap = RiraCapability(stub)
+        env_sem_naming = {k: v for k, v in os.environ.items() if k != "RIRA_NAMING_SYSTEM_ID"}
+        with mock.patch.dict(os.environ, env_sem_naming, clear=True):
+            asyncio.run(
+                cap.enviar_rira(
+                    _dados(),
+                    "item-1",
+                    status_rira="pending",
+                    identifier_system="http://ns/BRRNDS-52150",
+                )
+            )
+        import json
+
+        enviado = json.loads(stub.chamadas[0][2]["content"])
+        self.assertEqual(enviado["identifier"]["system"], "http://ns/BRRNDS-52150")
+
+    def test_refresh_apos_401_com_falha_de_auth_nao_http_e_rejeitado(self):
+        from rnds_client.capabilities.rira import RiraCapability
+        from rnds_client.exceptions import RndsAuthenticationError
+
+        class _Stub401:
+            def build_service_url(self, path):
+                return f"https://x/api/{path}"
+
+            async def headers(self, force_refresh=False):
+                if force_refresh:
+                    raise RndsAuthenticationError("resposta de token sem access_token")
+                return {}
+
+            async def request(self, method, url, **kwargs):
+                resp = httpx.Response(401, request=_req())
+                raise httpx.HTTPStatusError("401", request=_req(), response=resp)
+
+        cap = RiraCapability(_Stub401())
+        with self.assertRaises(ErroRiraRejeitado) as ctx:
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
+        self.assertEqual(ctx.exception.codigo, "autenticacao")
 
     def test_predecessor_gera_relatesto_no_bundle(self):
         from rnds_client.capabilities.rira import RiraCapability
