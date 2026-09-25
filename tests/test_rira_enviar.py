@@ -539,6 +539,60 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
         self.assertEqual(resultado.id_rnds_composition, "c1")
 
+    def test_consulta_extrai_bundle_de_location_versionada(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        location = "https://x/api/fhir/r4/Bundle/b1/_history/2"
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json=[{"location": location}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/fhir/r4/Bundle/b1"))
+
+        class _Stub:
+            def __init__(self):
+                self.urls = []
+
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                self.urls.append(url)
+                return busca if url.endswith("/identifier") else detalhe
+
+        stub = _Stub()
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira("http://ns", "item-1"))[0]
+        self.assertEqual(stub.urls[-1], "https://x/fhir/r4/Bundle/b1")
+        self.assertEqual(resultado.location_rnds, location)
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+
+    def test_consulta_prefere_id_explicito_a_location(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        location = "https://x/api/fhir/r4/Bundle/outro/_history/2"
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json=[{"id": "b1", "location": location}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/fhir/r4/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                if url.endswith("/identifier"):
+                    return busca
+                self.url_detalhe = url
+                return detalhe
+
+        stub = _Stub()
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira("http://ns", "item-1"))[0]
+        self.assertEqual(stub.url_detalhe, "https://x/fhir/r4/Bundle/b1")
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.location_rnds, location)
+
     def test_consulta_usa_somente_relacao_replaces(self):
         from rnds_client.capabilities.rira import _normalizar_documento
 
@@ -590,6 +644,64 @@ class TestConsultarRira(unittest.TestCase):
 
         _, _, dados = _normalizar_documento(documento)
         self.assertEqual(dados["observacao"], "Dor lombar crônica")
+
+    def test_consulta_seleciona_codigos_pelo_sistema_fhir(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+        from rnds_client.rira.codesystems import (
+            CBO_SYSTEM,
+            CID10_SYSTEM,
+            MODALIDADE_SYSTEM,
+            SIGTAP_SYSTEM,
+            STATUS_REGULACAO_SYSTEM,
+        )
+
+        documento = montar_bundle(
+            _dados(sigtap="0301010010", cbo_executante="223505"),
+            RiraFhirSettings.from_environment(),
+            "pending",
+        )
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+        conceitos = (
+            (recursos["ServiceRequest"]["code"], SIGTAP_SYSTEM),
+            (recursos["Condition"]["code"], CID10_SYSTEM),
+            (recursos["ServiceRequest"]["category"][0], MODALIDADE_SYSTEM),
+            (recursos["ServiceRequest"]["performerType"], CBO_SYSTEM),
+            (recursos["Composition"]["event"][0]["code"][0], STATUS_REGULACAO_SYSTEM),
+        )
+        for conceito, system in conceitos:
+            self.assertEqual(conceito["coding"][0]["system"], system)
+            conceito["coding"].insert(0, {"system": "http://local", "code": "codigo-local"})
+
+        status, _, dados = _normalizar_documento(documento)
+        self.assertEqual(status, "pending")
+        self.assertEqual(dados["sigtap"], "0301010010")
+        self.assertEqual(dados["cid10"], "J180")
+        self.assertEqual(dados["modalidade"], "09")
+        self.assertEqual(dados["cbo_executante"], "223505")
+
+    def test_consulta_nao_confirma_codigo_ausente_ou_conflitante(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+        from rnds_client.rira.codesystems import SIGTAP_SYSTEM, STATUS_REGULACAO_SYSTEM
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+        recursos["ServiceRequest"]["code"]["coding"] = [
+            {"system": "http://local", "code": "0101010010"}
+        ]
+        recursos["Composition"]["event"][0]["code"][0]["coding"].append(
+            {"system": STATUS_REGULACAO_SYSTEM, "code": "booked"}
+        )
+
+        status, _, dados = _normalizar_documento(documento)
+        self.assertIsNone(status)
+        self.assertIsNone(dados["sigtap"])
+
+        recursos["ServiceRequest"]["code"]["coding"] = [
+            {"system": SIGTAP_SYSTEM, "code": "0101010010"},
+            {"system": SIGTAP_SYSTEM, "code": "0202020020"},
+        ]
+        _, _, dados = _normalizar_documento(documento)
+        self.assertIsNone(dados["sigtap"])
 
 
 if __name__ == "__main__":

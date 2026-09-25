@@ -7,6 +7,13 @@ from typing import Any
 from httpx import HTTPError, HTTPStatusError, Response
 
 from rnds_client.base_client import RndsBaseClient
+from rnds_client.rira.codesystems import (
+    CBO_SYSTEM,
+    CID10_SYSTEM,
+    MODALIDADE_SYSTEM,
+    SIGTAP_SYSTEM,
+    STATUS_REGULACAO_SYSTEM,
+)
 from rnds_client.rira.exceptions import ResultadoRiraIncerto
 from rnds_client.rira.results import ResultadoEnvioRira
 from rnds_client.rira.schemas.rira_document import RiraDocumentData
@@ -116,7 +123,7 @@ class RiraCapability:
             bundle_id, composition_id = _ids_do_documento_consulta(item)
             location = item.get("location") or item.get("url")
             if not bundle_id and location:
-                bundle_id = location.rstrip("/").split("/")[-1]
+                bundle_id = sender.extrair_id_rnds(location)
             if not bundle_id:
                 continue
             documento = await self.get_documento(bundle_id)
@@ -215,9 +222,17 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
     condition = recursos.get("Condition", {})
     appointment = recursos.get("Appointment", {})
 
-    def codigo(concept: dict) -> str | None:
-        codings = concept.get("coding", []) if isinstance(concept, dict) else []
-        return codings[0].get("code") if codings else None
+    def codigo(concept: dict, system: str) -> str | None:
+        codings = (concept.get("coding") or []) if isinstance(concept, dict) else []
+        codigos = {
+            coding.get("code")
+            for coding in codings
+            if isinstance(coding, dict)
+            and coding.get("system") == system
+            and isinstance(coding.get("code"), str)
+            and coding.get("code")
+        }
+        return next(iter(codigos)) if len(codigos) == 1 else None
 
     def identificador(ref: dict) -> str | None:
         return (ref.get("identifier") or {}).get("value") if isinstance(ref, dict) else None
@@ -242,14 +257,14 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
     dados = {
         "identificador_local": (bundle.get("identifier") or {}).get("value"),
         "id_paciente": identificador(sr.get("subject") or comp.get("subject") or {}),
-        "sigtap": codigo(sr.get("code") or {}),
-        "cid10": codigo(condition.get("code") or {}),
+        "sigtap": codigo(sr.get("code") or {}, SIGTAP_SYSTEM),
+        "cid10": codigo(condition.get("code") or {}, CID10_SYSTEM),
         "data_solicitacao": sr.get("authoredOn"),
         "cnes_solicitante": identificador(sr.get("requester") or {}),
-        "modalidade": codigo((sr.get("category") or [{}])[0]),
+        "modalidade": codigo((sr.get("category") or [{}])[0], MODALIDADE_SYSTEM),
         "carater": sr.get("priority"),
         "cnes_executante": identificador((sr.get("performer") or [{}])[0]),
-        "cbo_executante": codigo(sr.get("performerType") or {}),
+        "cbo_executante": codigo(sr.get("performerType") or {}, CBO_SYSTEM),
         "appointment_start": appointment.get("start"),
         "appointment_end": appointment.get("end"),
         "observacao": ((condition.get("note") or [{}])[0] or {}).get("text"),
@@ -257,4 +272,4 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         "appointment_status": appointment.get("status"),
         "service_request_status": sr.get("status"),
     }
-    return codigo((event.get("code") or [{}])[0]), predecessor, dados
+    return codigo((event.get("code") or [{}])[0], STATUS_REGULACAO_SYSTEM), predecessor, dados
