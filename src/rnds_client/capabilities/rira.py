@@ -19,6 +19,8 @@ _COMPOSITION_STATUS = {
     "pending": "pending",
     "booked": "booked",
     "attended": "attended",
+    "absence": "absence",
+    "cancelled": "cancelled",
     "returned-to-requester": "returned-to-requester",
 }
 
@@ -65,7 +67,7 @@ class RiraCapability:
 
         if not location and not bundle_id:
             raise ResultadoRiraIncerto(
-                "POST aceito mas sem Location nem corpo utilizável.", codigo="resposta_perdida"
+                "POST aceito mas sem Location nem corpo utilizável.", codigo="resposta_perdida", http_status=response.status_code
             )
 
         if not composition_id and bundle_id:
@@ -73,6 +75,13 @@ class RiraCapability:
                 composition_id = await self._composition_id_por_get(bundle_id)
             except HTTPError:
                 composition_id = None
+
+        if not composition_id:
+            raise ResultadoRiraIncerto(
+                "POST aceito, mas o ID da Composition não foi confirmado.",
+                codigo="composition_id_ausente",
+                http_status=response.status_code,
+            )
 
         return ResultadoEnvioRira(
             http_status=response.status_code,
@@ -110,12 +119,23 @@ class RiraCapability:
                 bundle_id = location.rstrip("/").split("/")[-1]
             if not bundle_id:
                 continue
+            documento = await self.get_documento(bundle_id)
+            if documento.get("resourceType") != "Bundle":
+                raise ResultadoRiraIncerto(
+                    "Consulta retornou documento sem Bundle completo.",
+                    codigo="documento_incompleto",
+                )
+            _, composition_id = _ids_do_documento_consulta(documento)
+            status_rira, predecessor, dados_clinicos = _normalizar_documento(documento)
             resultados.append(
                 ResultadoEnvioRira(
                     http_status=response.status_code,
                     location_rnds=location,
                     id_rnds_bundle=bundle_id,
                     id_rnds_composition=composition_id,
+                    status_rira=status_rira,
+                    predecessor_composition_id=predecessor,
+                    dados_clinicos=dados_clinicos,
                 )
             )
         return resultados
@@ -182,3 +202,40 @@ def _com_id_local(dados: RiraDocumentData, identificador_local: str) -> RiraDocu
     if dados.id_local == identificador_local:
         return dados
     return replace(dados, id_local=identificador_local)
+
+
+def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[str, Any]]:
+    recursos = {
+        e.get("resource", {}).get("resourceType"): e.get("resource", {})
+        for e in bundle.get("entry", []) or []
+        if isinstance(e, dict) and isinstance(e.get("resource"), dict)
+    }
+    comp = recursos.get("Composition", {})
+    sr = recursos.get("ServiceRequest", {})
+    condition = recursos.get("Condition", {})
+    appointment = recursos.get("Appointment", {})
+
+    def codigo(concept: dict) -> str | None:
+        codings = concept.get("coding", []) if isinstance(concept, dict) else []
+        return codings[0].get("code") if codings else None
+
+    def identificador(ref: dict) -> str | None:
+        return (ref.get("identifier") or {}).get("value") if isinstance(ref, dict) else None
+
+    event = (comp.get("event") or [{}])[0]
+    relates = (comp.get("relatesTo") or [{}])[0]
+    predecessor = ((relates.get("targetReference") or {}).get("reference") or "").removeprefix("Composition/") or None
+    dados = {
+        "id_paciente": identificador(sr.get("subject") or comp.get("subject") or {}),
+        "sigtap": codigo(sr.get("code") or {}),
+        "cid10": codigo(condition.get("code") or {}),
+        "data_solicitacao": sr.get("authoredOn"),
+        "cnes_solicitante": identificador(sr.get("requester") or {}),
+        "modalidade": codigo((sr.get("category") or [{}])[0]),
+        "carater": sr.get("priority"),
+        "cnes_executante": identificador((sr.get("performer") or [{}])[0]),
+        "cbo_executante": codigo(sr.get("performerType") or {}),
+        "appointment_status": appointment.get("status"),
+        "service_request_status": sr.get("status"),
+    }
+    return codigo((event.get("code") or [{}])[0]), predecessor, dados

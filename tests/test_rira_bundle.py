@@ -156,12 +156,14 @@ class TestStatusPorRegulacao(unittest.TestCase):
         "pending": ("proposed", "active"),
         "booked": ("booked", "active"),
         "attended": ("fulfilled", "completed"),
+        "absence": ("noshow", "completed"),
+        "cancelled": ("cancelled", "revoked"),
         "returned-to-requester": ("waitlist", "on-hold"),
     }
 
     def _bundle_do_status(self, status: str) -> dict:
         extra = {}
-        if status in ("booked", "attended"):
+        if status in ("booked", "attended", "absence"):
             extra["data_agendamento"] = _DATA_AGENDAMENTO
         return _bundle(_status=status, id_local=f"item-{status}", **extra)
 
@@ -179,6 +181,12 @@ class TestStatusPorRegulacao(unittest.TestCase):
                 )
                 self.assertEqual(appt["status"], appt_esperado)
                 self.assertEqual(sr["status"], sr_esperado)
+
+    def test_falta_referencia_o_agendamento_no_evento(self):
+        bundle = self._bundle_do_status("absence")
+        comp = bundle["entry"][0]["resource"]
+        self.assertEqual(comp["event"][0]["code"][0]["coding"][0]["code"], "absence")
+        self.assertTrue(any("reference" in detalhe for detalhe in comp["event"][0]["detail"]))
 
     def test_returned_to_requester_dispensa_datas_no_appointment(self):
         bundle = self._bundle_do_status("returned-to-requester")

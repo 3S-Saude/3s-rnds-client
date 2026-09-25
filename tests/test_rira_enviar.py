@@ -224,7 +224,7 @@ class TestEnviarRira(unittest.TestCase):
         self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
         self.assertEqual(resultado.id_rnds_composition, "a1a8-c0m1")
 
-    def test_location_versionado_sem_corpo_preserva_id_do_bundle(self):
+    def test_location_versionado_sem_composition_fica_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
 
         resp = httpx.Response(
@@ -235,8 +235,8 @@ class TestEnviarRira(unittest.TestCase):
             request=_req(),
         )
         cap = RiraCapability(_BaseClientStub(resp))
-        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
-        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
+        with self.assertRaises(ResultadoRiraIncerto):
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
 
     def test_identifier_system_por_chamada_dispensa_env_naming_system(self):
         from rnds_client.capabilities.rira import RiraCapability
@@ -323,7 +323,7 @@ class TestEnviarRira(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="faltou"))
 
-    def test_falha_no_get_de_apoio_nao_derruba_envio_bem_sucedido(self):
+    def test_falha_no_get_de_apoio_mantem_resultado_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
 
         post_ok = httpx.Response(
@@ -333,10 +333,8 @@ class TestEnviarRira(unittest.TestCase):
         )
         stub = _BaseClientStub(post_ok, retry_response=httpx.ReadTimeout("get falhou", request=_req()))
         cap = RiraCapability(stub)
-        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
-        self.assertEqual(resultado.http_status, 201)
-        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
-        self.assertIsNone(resultado.id_rnds_composition)
+        with self.assertRaises(ResultadoRiraIncerto):
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
 
     def test_timeout_de_autenticacao_e_pre_post_nao_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
@@ -382,7 +380,7 @@ class TestEnviarRira(unittest.TestCase):
 
         respostas = [
             httpx.HTTPStatusError("401", request=_req(), response=httpx.Response(401, request=_req())),
-            httpx.Response(201, headers={"location": "https://x/Bundle/ok"}, request=_req()),
+            httpx.Response(201, json={"id": "ok", "entry": [{"resource": {"resourceType": "Composition", "id": "c1"}}]}, headers={"location": "https://x/Bundle/ok"}, request=_req()),
         ]
 
         class _Stub:
@@ -475,10 +473,12 @@ class TestConsultarRira(unittest.TestCase):
                 return f"https://x/api/{path}"
 
             async def request_with_retry(self, method, url, **kwargs):
-                capturado["method"] = method
-                capturado["url"] = url
-                capturado["params"] = kwargs.get("params")
-                return _resp
+                if url.endswith("/identifier"):
+                    capturado["method"] = method
+                    capturado["url"] = url
+                    capturado["params"] = kwargs.get("params")
+                    return _resp
+                return httpx.Response(200, json=_resp.json()["entry"][0]["resource"], request=httpx.Request("GET", url))
 
         _resp = self._resposta_identifier()
         cap = RiraCapability(_Stub())
@@ -511,6 +511,28 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(
             asyncio.run(cap.consultar_rira("http://ns/BRRNDS-9999", "sumiu")), []
         )
+
+    def test_consulta_detalha_estado_predecessor_e_dados_clinicos(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        documento = montar_bundle(_dados(data_agendamento="2024-01-20T09:00:00-03:00"), RiraFhirSettings.from_environment(), "booked", "c0")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json={"resourceType": "Bundle", "entry": [{"resource": {"resourceType": "Bundle", "id": "b1"}}]}, request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return busca if url.endswith("/identifier") else detalhe
+
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira("http://ns", "item-1"))[0]
+        self.assertEqual(resultado.status_rira, "booked")
+        self.assertEqual(resultado.predecessor_composition_id, "c0")
+        self.assertEqual(resultado.dados_clinicos["sigtap"], "0101010010")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
 
 
 if __name__ == "__main__":
