@@ -237,6 +237,9 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         "carater": sr.get("priority"),
         "cnes_executante": identificador((sr.get("performer") or [{}])[0]),
         "cbo_executante": codigo(sr.get("performerType") or {}),
+        "data_agendamento": appointment.get("start"),
+        "data_atendimento": appointment.get("end") if codigo((event.get("code") or [{}])[0]) == "attended" else None,
+        "autor_cnes": identificador((comp.get("author") or [{}])[0]),
         "appointment_status": appointment.get("status"),
         "service_request_status": sr.get("status"),
     }

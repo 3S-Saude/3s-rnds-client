@@ -533,6 +533,8 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(resultado.predecessor_composition_id, "c0")
         self.assertEqual(resultado.dados_clinicos["sigtap"], "0101010010")
         self.assertEqual(resultado.dados_clinicos["identificador_local"], "item-1")
+        self.assertEqual(resultado.dados_clinicos["data_agendamento"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
         self.assertEqual(resultado.id_rnds_composition, "c1")
 
 
