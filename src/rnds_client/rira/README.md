@@ -221,6 +221,15 @@ conflitantes, o valor normalizado é `None`; o consumidor não deve confirmar
 automaticamente esse candidato. `location_rnds` preserva a URL original, mesmo
 quando contém `/_history/<versão>`.
 
+`dados_clinicos` inclui `service_request_occurrence`, extraído diretamente de
+`ServiceRequest.occurrenceDateTime`, além dos limites serializados de
+`Appointment.start/end`. O sistema de `Bundle.identifier` deve coincidir com
+`identifier_system` da consulta; paciente, solicitante, executante e autor
+devem usar seus sistemas FHIR esperados. Identificador obrigatório ausente ou
+identificador presente com sistema/valor inválido torna `dados_clinicos=None`,
+mantendo os IDs do candidato para análise. A ausência legítima do executante
+continua representada por `cnes_executante=None` no dicionário clínico válido.
+
 Para a substituição, guarde `id_rnds_composition` e passe-o como
 `predecessor_composition_id` no envio seguinte.
 

@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import os
 import unittest
 from unittest import mock
@@ -28,6 +29,8 @@ from rnds_client.rira.services.sender import (  # noqa: E402
     montar_bundle,
 )
 from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
+
+_IDENTIFIER_SYSTEM = RiraFhirSettings.from_environment().bundle_id_system
 
 
 def _read_error():
@@ -528,13 +531,14 @@ class TestConsultarRira(unittest.TestCase):
             async def request_with_retry(self, method, url, **kwargs):
                 return busca if url.endswith("/identifier") else detalhe
 
-        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira("http://ns", "item-1"))[0]
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
         self.assertEqual(resultado.status_rira, "booked")
         self.assertEqual(resultado.predecessor_composition_id, "c0")
         self.assertEqual(resultado.dados_clinicos["sigtap"], "0101010010")
         self.assertEqual(resultado.dados_clinicos["identificador_local"], "item-1")
         self.assertEqual(resultado.dados_clinicos["appointment_start"], "2024-01-20T09:00:00-03:00")
         self.assertEqual(resultado.dados_clinicos["appointment_end"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["service_request_occurrence"], "2024-01-20T09:00:00-03:00")
         self.assertEqual(resultado.dados_clinicos["observacao"], "Sem observações")
         self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
         self.assertEqual(resultado.id_rnds_composition, "c1")
@@ -561,7 +565,7 @@ class TestConsultarRira(unittest.TestCase):
                 return busca if url.endswith("/identifier") else detalhe
 
         stub = _Stub()
-        resultado = asyncio.run(RiraCapability(stub).consultar_rira("http://ns", "item-1"))[0]
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
         self.assertEqual(stub.urls[-1], "https://x/fhir/r4/Bundle/b1")
         self.assertEqual(resultado.location_rnds, location)
         self.assertEqual(resultado.id_rnds_bundle, "b1")
@@ -588,7 +592,7 @@ class TestConsultarRira(unittest.TestCase):
                 return detalhe
 
         stub = _Stub()
-        resultado = asyncio.run(RiraCapability(stub).consultar_rira("http://ns", "item-1"))[0]
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
         self.assertEqual(stub.url_detalhe, "https://x/fhir/r4/Bundle/b1")
         self.assertEqual(resultado.id_rnds_bundle, "b1")
         self.assertEqual(resultado.location_rnds, location)
@@ -602,11 +606,11 @@ class TestConsultarRira(unittest.TestCase):
             0, {"code": "appends", "targetReference": {"reference": "Composition/outra"}}
         )
 
-        _, predecessor, _ = _normalizar_documento(documento)
+        _, predecessor, _ = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertEqual(predecessor, "c0")
 
         composition["relatesTo"] = composition["relatesTo"][:1]
-        _, predecessor, _ = _normalizar_documento(documento)
+        _, predecessor, _ = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertIsNone(predecessor)
 
     def test_datas_normalizadas_refletem_fallback_da_autorizacao(self):
@@ -617,7 +621,7 @@ class TestConsultarRira(unittest.TestCase):
             _dados(data_autorizacao=autorizacao), RiraFhirSettings.from_environment(), "booked"
         )
 
-        _, _, dados = _normalizar_documento(documento)
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertEqual(dados["appointment_start"], autorizacao)
         self.assertEqual(dados["appointment_end"], autorizacao)
         self.assertNotIn("data_agendamento", dados)
@@ -630,7 +634,7 @@ class TestConsultarRira(unittest.TestCase):
             _dados(data_agendamento=agendamento), RiraFhirSettings.from_environment(), "attended"
         )
 
-        _, _, dados = _normalizar_documento(documento)
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertEqual(dados["appointment_start"], agendamento)
         self.assertEqual(dados["appointment_end"], agendamento)
         self.assertNotIn("data_atendimento", dados)
@@ -642,7 +646,7 @@ class TestConsultarRira(unittest.TestCase):
             _dados(observacao="Dor lombar crônica"), RiraFhirSettings.from_environment(), "pending"
         )
 
-        _, _, dados = _normalizar_documento(documento)
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertEqual(dados["observacao"], "Dor lombar crônica")
 
     def test_consulta_seleciona_codigos_pelo_sistema_fhir(self):
@@ -672,7 +676,7 @@ class TestConsultarRira(unittest.TestCase):
             self.assertEqual(conceito["coding"][0]["system"], system)
             conceito["coding"].insert(0, {"system": "http://local", "code": "codigo-local"})
 
-        status, _, dados = _normalizar_documento(documento)
+        status, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertEqual(status, "pending")
         self.assertEqual(dados["sigtap"], "0301010010")
         self.assertEqual(dados["cid10"], "J180")
@@ -692,7 +696,7 @@ class TestConsultarRira(unittest.TestCase):
             {"system": STATUS_REGULACAO_SYSTEM, "code": "booked"}
         )
 
-        status, _, dados = _normalizar_documento(documento)
+        status, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertIsNone(status)
         self.assertIsNone(dados["sigtap"])
 
@@ -700,8 +704,103 @@ class TestConsultarRira(unittest.TestCase):
             {"system": SIGTAP_SYSTEM, "code": "0101010010"},
             {"system": SIGTAP_SYSTEM, "code": "0202020020"},
         ]
-        _, _, dados = _normalizar_documento(documento)
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertIsNone(dados["sigtap"])
+
+    def test_ocorrencia_diferencia_bundles_com_mesmas_datas_do_appointment(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        inicio = "2024-01-20T09:00:00-03:00"
+        fim = "2024-01-20T10:00:00-03:00"
+        agendado = montar_bundle(
+            _dados(data_agendamento=inicio, data_atendimento=fim),
+            RiraFhirSettings.from_environment(),
+            "attended",
+        )
+        autorizado = montar_bundle(
+            _dados(data_autorizacao=inicio, data_atendimento=fim),
+            RiraFhirSettings.from_environment(),
+            "attended",
+        )
+
+        _, _, dados_agendado = _normalizar_documento(agendado, _IDENTIFIER_SYSTEM)
+        _, _, dados_autorizado = _normalizar_documento(autorizado, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados_agendado["appointment_start"], dados_autorizado["appointment_start"])
+        self.assertEqual(dados_agendado["appointment_end"], dados_autorizado["appointment_end"])
+        self.assertEqual(dados_agendado["service_request_occurrence"], inicio)
+        self.assertEqual(dados_autorizado["service_request_occurrence"], fim)
+
+    def test_identificador_com_sistema_ou_valor_invalido_impede_conciliacao(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        original = montar_bundle(
+            _dados(cnes_executante="7654321"), RiraFhirSettings.from_environment(), "pending"
+        )
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in original["entry"]}
+        identificadores = (
+            ("bundle", original["identifier"]),
+            ("paciente_solicitacao", recursos["ServiceRequest"]["subject"]["identifier"]),
+            ("paciente_composicao", recursos["Composition"]["subject"]["identifier"]),
+            ("paciente_condicao", recursos["Condition"]["subject"]["identifier"]),
+            ("paciente_agendamento", recursos["Appointment"]["participant"][0]["actor"]["identifier"]),
+            ("solicitante", recursos["ServiceRequest"]["requester"]["identifier"]),
+            ("executante", recursos["ServiceRequest"]["performer"][0]["identifier"]),
+            ("autor", recursos["Composition"]["author"][0]["identifier"]),
+        )
+        for nome, identificador in identificadores:
+            for alteracao in ({"system": "http://outro"}, {"system": None}, {"value": None}):
+                with self.subTest(campo=nome, alteracao=alteracao):
+                    documento = deepcopy(original)
+                    recursos_copia = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+                    alvos = {
+                        "bundle": documento["identifier"],
+                        "paciente_solicitacao": recursos_copia["ServiceRequest"]["subject"]["identifier"],
+                        "paciente_composicao": recursos_copia["Composition"]["subject"]["identifier"],
+                        "paciente_condicao": recursos_copia["Condition"]["subject"]["identifier"],
+                        "paciente_agendamento": recursos_copia["Appointment"]["participant"][0]["actor"]["identifier"],
+                        "solicitante": recursos_copia["ServiceRequest"]["requester"]["identifier"],
+                        "executante": recursos_copia["ServiceRequest"]["performer"][0]["identifier"],
+                        "autor": recursos_copia["Composition"]["author"][0]["identifier"],
+                    }
+                    self.assertEqual(alvos[nome], identificador)
+                    alvos[nome].update(alteracao)
+                    _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                    self.assertIsNone(dados)
+
+    def test_executante_ausente_e_valido_mas_presente_invalido_nao_e(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        sr = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "ServiceRequest")
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados["cnes_executante"])
+
+        sr["performer"] = [{"identifier": {"system": "http://outro", "value": "1234567"}}]
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
+    def test_consulta_mantem_ids_quando_bundle_tem_sistema_invalido(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        documento["identifier"]["system"] = "http://outro"
+        busca = httpx.Response(200, json=[{"id": "b1", "location": "Bundle/b1"}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return busca if url.endswith("/identifier") else detalhe
+
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+        self.assertEqual(resultado.location_rnds, "Bundle/b1")
+        self.assertIsNone(resultado.dados_clinicos)
 
 
 if __name__ == "__main__":

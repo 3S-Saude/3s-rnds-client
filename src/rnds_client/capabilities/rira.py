@@ -10,6 +10,8 @@ from rnds_client.base_client import RndsBaseClient
 from rnds_client.rira.codesystems import (
     CBO_SYSTEM,
     CID10_SYSTEM,
+    CNES_SYSTEM,
+    INDIVIDUO_SYSTEM,
     MODALIDADE_SYSTEM,
     SIGTAP_SYSTEM,
     STATUS_REGULACAO_SYSTEM,
@@ -133,7 +135,9 @@ class RiraCapability:
                     codigo="documento_incompleto",
                 )
             _, composition_id = _ids_do_documento_consulta(documento)
-            status_rira, predecessor, dados_clinicos = _normalizar_documento(documento)
+            status_rira, predecessor, dados_clinicos = _normalizar_documento(
+                documento, identifier_system
+            )
             resultados.append(
                 ResultadoEnvioRira(
                     http_status=response.status_code,
@@ -211,7 +215,9 @@ def _com_id_local(dados: RiraDocumentData, identificador_local: str) -> RiraDocu
     return replace(dados, id_local=identificador_local)
 
 
-def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[str, Any]]:
+def _normalizar_documento(
+    bundle: dict, identifier_system: str
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
     recursos = {
         e.get("resource", {}).get("resourceType"): e.get("resource", {})
         for e in bundle.get("entry", []) or []
@@ -234,8 +240,25 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         }
         return next(iter(codigos)) if len(codigos) == 1 else None
 
-    def identificador(ref: dict) -> str | None:
-        return (ref.get("identifier") or {}).get("value") if isinstance(ref, dict) else None
+    def identificador(ref: Any, system: str, *, opcional: bool = False) -> tuple[str | None, bool]:
+        if ref is None:
+            return None, opcional
+        if not isinstance(ref, dict):
+            return None, False
+        valor = ref.get("identifier")
+        if not isinstance(valor, dict) or valor.get("system") != system:
+            return None, False
+        codigo = valor.get("value")
+        if not isinstance(codigo, str) or not codigo:
+            return None, False
+        return codigo, True
+
+    def referencia_unica(referencias: Any, *, opcional: bool = False) -> dict | None:
+        if opcional and referencias in (None, []):
+            return None
+        if isinstance(referencias, list) and len(referencias) == 1 and isinstance(referencias[0], dict):
+            return referencias[0]
+        return {}
 
     event = (comp.get("event") or [{}])[0]
     replaces = next(
@@ -254,22 +277,52 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         and len(partes_referencia) > partes_referencia.index("Composition") + 1
         else None
     )
+    identificador_local, local_valido = identificador(
+        {"identifier": bundle.get("identifier")}, identifier_system
+    )
+    id_paciente, paciente_valido = identificador(sr.get("subject"), INDIVIDUO_SYSTEM)
+    pacientes_adicionais = (
+        identificador(comp.get("subject"), INDIVIDUO_SYSTEM),
+        identificador(condition.get("subject"), INDIVIDUO_SYSTEM),
+        identificador(
+            (referencia_unica(appointment.get("participant")) or {}).get("actor"),
+            INDIVIDUO_SYSTEM,
+        ),
+    )
+    cnes_solicitante, solicitante_valido = identificador(sr.get("requester"), CNES_SYSTEM)
+    cnes_executante, executante_valido = identificador(
+        referencia_unica(sr.get("performer"), opcional=True), CNES_SYSTEM, opcional=True
+    )
+    autor_cnes, autor_valido = identificador(
+        referencia_unica(comp.get("author")), CNES_SYSTEM
+    )
+    status_rira = codigo((event.get("code") or [{}])[0], STATUS_REGULACAO_SYSTEM)
+    if not (
+        local_valido
+        and paciente_valido
+        and all(valido and valor == id_paciente for valor, valido in pacientes_adicionais)
+        and solicitante_valido
+        and executante_valido
+        and autor_valido
+    ):
+        return status_rira, predecessor, None
     dados = {
-        "identificador_local": (bundle.get("identifier") or {}).get("value"),
-        "id_paciente": identificador(sr.get("subject") or comp.get("subject") or {}),
+        "identificador_local": identificador_local,
+        "id_paciente": id_paciente,
         "sigtap": codigo(sr.get("code") or {}, SIGTAP_SYSTEM),
         "cid10": codigo(condition.get("code") or {}, CID10_SYSTEM),
         "data_solicitacao": sr.get("authoredOn"),
-        "cnes_solicitante": identificador(sr.get("requester") or {}),
+        "cnes_solicitante": cnes_solicitante,
         "modalidade": codigo((sr.get("category") or [{}])[0], MODALIDADE_SYSTEM),
         "carater": sr.get("priority"),
-        "cnes_executante": identificador((sr.get("performer") or [{}])[0]),
+        "cnes_executante": cnes_executante,
         "cbo_executante": codigo(sr.get("performerType") or {}, CBO_SYSTEM),
         "appointment_start": appointment.get("start"),
         "appointment_end": appointment.get("end"),
+        "service_request_occurrence": sr.get("occurrenceDateTime"),
         "observacao": ((condition.get("note") or [{}])[0] or {}).get("text"),
-        "autor_cnes": identificador((comp.get("author") or [{}])[0]),
+        "autor_cnes": autor_cnes,
         "appointment_status": appointment.get("status"),
         "service_request_status": sr.get("status"),
     }
-    return codigo((event.get("code") or [{}])[0], STATUS_REGULACAO_SYSTEM), predecessor, dados
+    return status_rira, predecessor, dados
