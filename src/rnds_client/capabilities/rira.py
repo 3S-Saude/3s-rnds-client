@@ -223,9 +223,22 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         return (ref.get("identifier") or {}).get("value") if isinstance(ref, dict) else None
 
     event = (comp.get("event") or [{}])[0]
-    relates = (comp.get("relatesTo") or [{}])[0]
-    referencia = ((relates.get("targetReference") or {}).get("reference") or "").split("/")
-    predecessor = referencia[referencia.index("Composition") + 1] if "Composition" in referencia and len(referencia) > referencia.index("Composition") + 1 else None
+    replaces = next(
+        (
+            relacao
+            for relacao in comp.get("relatesTo", []) or []
+            if isinstance(relacao, dict) and relacao.get("code") == "replaces"
+        ),
+        None,
+    )
+    referencia = ((replaces or {}).get("targetReference") or {}).get("reference") or ""
+    partes_referencia = referencia.split("/")
+    predecessor = (
+        partes_referencia[partes_referencia.index("Composition") + 1]
+        if "Composition" in partes_referencia
+        and len(partes_referencia) > partes_referencia.index("Composition") + 1
+        else None
+    )
     dados = {
         "identificador_local": (bundle.get("identifier") or {}).get("value"),
         "id_paciente": identificador(sr.get("subject") or comp.get("subject") or {}),
@@ -237,8 +250,9 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
         "carater": sr.get("priority"),
         "cnes_executante": identificador((sr.get("performer") or [{}])[0]),
         "cbo_executante": codigo(sr.get("performerType") or {}),
-        "data_agendamento": appointment.get("start"),
-        "data_atendimento": appointment.get("end") if codigo((event.get("code") or [{}])[0]) == "attended" else None,
+        "appointment_start": appointment.get("start"),
+        "appointment_end": appointment.get("end"),
+        "observacao": ((condition.get("note") or [{}])[0] or {}).get("text"),
         "autor_cnes": identificador((comp.get("author") or [{}])[0]),
         "appointment_status": appointment.get("status"),
         "service_request_status": sr.get("status"),

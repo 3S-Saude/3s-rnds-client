@@ -533,9 +533,63 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(resultado.predecessor_composition_id, "c0")
         self.assertEqual(resultado.dados_clinicos["sigtap"], "0101010010")
         self.assertEqual(resultado.dados_clinicos["identificador_local"], "item-1")
-        self.assertEqual(resultado.dados_clinicos["data_agendamento"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["appointment_start"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["appointment_end"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["observacao"], "Sem observações")
         self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
         self.assertEqual(resultado.id_rnds_composition, "c1")
+
+    def test_consulta_usa_somente_relacao_replaces(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending", "c0")
+        composition = documento["entry"][0]["resource"]
+        composition["relatesTo"].insert(
+            0, {"code": "appends", "targetReference": {"reference": "Composition/outra"}}
+        )
+
+        _, predecessor, _ = _normalizar_documento(documento)
+        self.assertEqual(predecessor, "c0")
+
+        composition["relatesTo"] = composition["relatesTo"][:1]
+        _, predecessor, _ = _normalizar_documento(documento)
+        self.assertIsNone(predecessor)
+
+    def test_datas_normalizadas_refletem_fallback_da_autorizacao(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        autorizacao = "2024-01-19T08:00:00-03:00"
+        documento = montar_bundle(
+            _dados(data_autorizacao=autorizacao), RiraFhirSettings.from_environment(), "booked"
+        )
+
+        _, _, dados = _normalizar_documento(documento)
+        self.assertEqual(dados["appointment_start"], autorizacao)
+        self.assertEqual(dados["appointment_end"], autorizacao)
+        self.assertNotIn("data_agendamento", dados)
+
+    def test_data_final_nao_inventa_atendimento(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        agendamento = "2024-01-20T09:00:00-03:00"
+        documento = montar_bundle(
+            _dados(data_agendamento=agendamento), RiraFhirSettings.from_environment(), "attended"
+        )
+
+        _, _, dados = _normalizar_documento(documento)
+        self.assertEqual(dados["appointment_start"], agendamento)
+        self.assertEqual(dados["appointment_end"], agendamento)
+        self.assertNotIn("data_atendimento", dados)
+
+    def test_consulta_normaliza_observacao_clinica(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(
+            _dados(observacao="Dor lombar crônica"), RiraFhirSettings.from_environment(), "pending"
+        )
+
+        _, _, dados = _normalizar_documento(documento)
+        self.assertEqual(dados["observacao"], "Dor lombar crônica")
 
 
 if __name__ == "__main__":
