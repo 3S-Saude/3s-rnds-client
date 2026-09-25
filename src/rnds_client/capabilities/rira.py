@@ -7,6 +7,15 @@ from typing import Any
 from httpx import HTTPError, HTTPStatusError, Response
 
 from rnds_client.base_client import RndsBaseClient
+from rnds_client.rira.codesystems import (
+    CBO_SYSTEM,
+    CID10_SYSTEM,
+    CNES_SYSTEM,
+    INDIVIDUO_SYSTEM,
+    MODALIDADE_SYSTEM,
+    SIGTAP_SYSTEM,
+    STATUS_REGULACAO_SYSTEM,
+)
 from rnds_client.rira.exceptions import ResultadoRiraIncerto
 from rnds_client.rira.results import ResultadoEnvioRira
 from rnds_client.rira.schemas.rira_document import RiraDocumentData
@@ -19,6 +28,8 @@ _COMPOSITION_STATUS = {
     "pending": "pending",
     "booked": "booked",
     "attended": "attended",
+    "absence": "absence",
+    "cancelled": "cancelled",
     "returned-to-requester": "returned-to-requester",
 }
 
@@ -65,7 +76,7 @@ class RiraCapability:
 
         if not location and not bundle_id:
             raise ResultadoRiraIncerto(
-                "POST aceito mas sem Location nem corpo utilizável.", codigo="resposta_perdida"
+                "POST aceito mas sem Location nem corpo utilizável.", codigo="resposta_perdida", http_status=response.status_code
             )
 
         if not composition_id and bundle_id:
@@ -73,6 +84,13 @@ class RiraCapability:
                 composition_id = await self._composition_id_por_get(bundle_id)
             except HTTPError:
                 composition_id = None
+
+        if not composition_id:
+            raise ResultadoRiraIncerto(
+                "POST aceito, mas o ID da Composition não foi confirmado.",
+                codigo="composition_id_ausente",
+                http_status=response.status_code,
+            )
 
         return ResultadoEnvioRira(
             http_status=response.status_code,
@@ -107,15 +125,28 @@ class RiraCapability:
             bundle_id, composition_id = _ids_do_documento_consulta(item)
             location = item.get("location") or item.get("url")
             if not bundle_id and location:
-                bundle_id = location.rstrip("/").split("/")[-1]
+                bundle_id = sender.extrair_id_rnds(location)
             if not bundle_id:
                 continue
+            documento = await self.get_documento(bundle_id)
+            if documento.get("resourceType") != "Bundle":
+                raise ResultadoRiraIncerto(
+                    "Consulta retornou documento sem Bundle completo.",
+                    codigo="documento_incompleto",
+                )
+            _, composition_id = _ids_do_documento_consulta(documento)
+            status_rira, predecessor, dados_clinicos = _normalizar_documento(
+                documento, identifier_system
+            )
             resultados.append(
                 ResultadoEnvioRira(
                     http_status=response.status_code,
                     location_rnds=location,
                     id_rnds_bundle=bundle_id,
                     id_rnds_composition=composition_id,
+                    status_rira=status_rira,
+                    predecessor_composition_id=predecessor,
+                    dados_clinicos=dados_clinicos,
                 )
             )
         return resultados
@@ -182,3 +213,116 @@ def _com_id_local(dados: RiraDocumentData, identificador_local: str) -> RiraDocu
     if dados.id_local == identificador_local:
         return dados
     return replace(dados, id_local=identificador_local)
+
+
+def _normalizar_documento(
+    bundle: dict, identifier_system: str
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    recursos = {
+        e.get("resource", {}).get("resourceType"): e.get("resource", {})
+        for e in bundle.get("entry", []) or []
+        if isinstance(e, dict) and isinstance(e.get("resource"), dict)
+    }
+    comp = recursos.get("Composition", {})
+    sr = recursos.get("ServiceRequest", {})
+    condition = recursos.get("Condition", {})
+    appointment = recursos.get("Appointment", {})
+
+    def codigo(concept: dict, system: str) -> str | None:
+        codings = (concept.get("coding") or []) if isinstance(concept, dict) else []
+        codigos = {
+            coding.get("code")
+            for coding in codings
+            if isinstance(coding, dict)
+            and coding.get("system") == system
+            and isinstance(coding.get("code"), str)
+            and coding.get("code")
+        }
+        return next(iter(codigos)) if len(codigos) == 1 else None
+
+    def identificador(ref: Any, system: str, *, opcional: bool = False) -> tuple[str | None, bool]:
+        if ref is None:
+            return None, opcional
+        if not isinstance(ref, dict):
+            return None, False
+        valor = ref.get("identifier")
+        if not isinstance(valor, dict) or valor.get("system") != system:
+            return None, False
+        codigo = valor.get("value")
+        if not isinstance(codigo, str) or not codigo:
+            return None, False
+        return codigo, True
+
+    def referencia_unica(referencias: Any, *, opcional: bool = False) -> dict | None:
+        if opcional and referencias in (None, []):
+            return None
+        if isinstance(referencias, list) and len(referencias) == 1 and isinstance(referencias[0], dict):
+            return referencias[0]
+        return {}
+
+    event = (comp.get("event") or [{}])[0]
+    replaces = next(
+        (
+            relacao
+            for relacao in comp.get("relatesTo", []) or []
+            if isinstance(relacao, dict) and relacao.get("code") == "replaces"
+        ),
+        None,
+    )
+    referencia = ((replaces or {}).get("targetReference") or {}).get("reference") or ""
+    partes_referencia = referencia.split("/")
+    predecessor = (
+        partes_referencia[partes_referencia.index("Composition") + 1]
+        if "Composition" in partes_referencia
+        and len(partes_referencia) > partes_referencia.index("Composition") + 1
+        else None
+    )
+    identificador_local, local_valido = identificador(
+        {"identifier": bundle.get("identifier")}, identifier_system
+    )
+    id_paciente, paciente_valido = identificador(sr.get("subject"), INDIVIDUO_SYSTEM)
+    pacientes_adicionais = (
+        identificador(comp.get("subject"), INDIVIDUO_SYSTEM),
+        identificador(condition.get("subject"), INDIVIDUO_SYSTEM),
+        identificador(
+            (referencia_unica(appointment.get("participant")) or {}).get("actor"),
+            INDIVIDUO_SYSTEM,
+        ),
+    )
+    cnes_solicitante, solicitante_valido = identificador(sr.get("requester"), CNES_SYSTEM)
+    cnes_executante, executante_valido = identificador(
+        referencia_unica(sr.get("performer"), opcional=True), CNES_SYSTEM, opcional=True
+    )
+    autor_cnes, autor_valido = identificador(
+        referencia_unica(comp.get("author")), CNES_SYSTEM
+    )
+    status_rira = codigo((event.get("code") or [{}])[0], STATUS_REGULACAO_SYSTEM)
+    if not (
+        local_valido
+        and paciente_valido
+        and all(valido and valor == id_paciente for valor, valido in pacientes_adicionais)
+        and solicitante_valido
+        and executante_valido
+        and autor_valido
+    ):
+        return status_rira, predecessor, None
+    dados = {
+        "identificador_local": identificador_local,
+        "id_paciente": id_paciente,
+        "sigtap": codigo(sr.get("code") or {}, SIGTAP_SYSTEM),
+        "cid10": codigo(condition.get("code") or {}, CID10_SYSTEM),
+        "data_solicitacao": sr.get("authoredOn"),
+        "cnes_solicitante": cnes_solicitante,
+        "modalidade": codigo((sr.get("category") or [{}])[0], MODALIDADE_SYSTEM),
+        "carater": sr.get("priority"),
+        "cnes_executante": cnes_executante,
+        "cbo_executante": codigo(sr.get("performerType") or {}, CBO_SYSTEM),
+        "appointment_start": appointment.get("start"),
+        "appointment_end": appointment.get("end"),
+        "service_request_occurrence": sr.get("occurrenceDateTime"),
+        "observacao": ((condition.get("note") or [{}])[0] or {}).get("text"),
+        "autor_cnes": autor_cnes,
+        "appointment_status": appointment.get("status"),
+        "service_request_status": sr.get("status"),
+    }
+    return status_rira, predecessor, dados

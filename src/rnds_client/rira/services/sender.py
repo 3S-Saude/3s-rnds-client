@@ -44,6 +44,8 @@ _APPOINTMENT_STATUS_MAP = {
     "returned-to-requester": "waitlist",
     "booked": "booked",
     "attended": "fulfilled",
+    "absence": "noshow",
+    "cancelled": "cancelled",
 }
 
 _STATUS_RETENTAVEIS_4XX = {408, 429}

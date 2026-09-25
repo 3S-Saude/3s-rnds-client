@@ -126,9 +126,11 @@ RIRA_COND_PROFILE=
 ## RIRA (Registro de Informacoes da Regulacao Assistencial)
 
 O modulo `rnds_client.rira` envia a RNDS o andamento de uma solicitacao regulada:
-a cada mudanca de status (`pending` -> `booked` -> `attended`, ou
-`returned-to-requester`), monta um documento FHIR a partir de um `RiraDocumentData`
-e faz um `POST`.
+a cada mudanca de status (`pending`, `booked`, `attended`, `absence`,
+`cancelled` ou `returned-to-requester`), monta um documento FHIR a partir de
+um `RiraDocumentData` e faz um `POST`. `absence` representa falta ao atendimento;
+`cancelled` representa negacao ou cancelamento da solicitacao, distinto da
+exclusao de um documento ja enviado.
 
 **Configuracao:** so as variaveis de ambiente `RIRA_*` (bloco `RIRA` da secao
 [Configuracao no Django](#configuracao-no-django)).
@@ -201,8 +203,11 @@ Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.3.1` (contrato RIRA *stateless* — ver
-[docs/rira-evolucao-0.3.0.md](docs/rira-evolucao-0.3.0.md)).
+Versao atual: `0.3.2` (contrato RIRA *stateless* — ver
+[docs/rira-evolucao-0.3.2.md](docs/rira-evolucao-0.3.2.md)).
+
+`0.3.2` — estados `absence` e `cancelled`, consulta detalhada para conciliacao
+de respostas incertas e confirmacao dos IDs do Bundle e da Composition.
 
 `0.3.1` — correcoes sobre `0.3.0`:
 

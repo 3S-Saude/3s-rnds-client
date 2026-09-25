@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import os
 import unittest
 from unittest import mock
@@ -28,6 +29,8 @@ from rnds_client.rira.services.sender import (  # noqa: E402
     montar_bundle,
 )
 from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
+
+_IDENTIFIER_SYSTEM = RiraFhirSettings.from_environment().bundle_id_system
 
 
 def _read_error():
@@ -224,7 +227,7 @@ class TestEnviarRira(unittest.TestCase):
         self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
         self.assertEqual(resultado.id_rnds_composition, "a1a8-c0m1")
 
-    def test_location_versionado_sem_corpo_preserva_id_do_bundle(self):
+    def test_location_versionado_sem_composition_fica_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
 
         resp = httpx.Response(
@@ -235,8 +238,8 @@ class TestEnviarRira(unittest.TestCase):
             request=_req(),
         )
         cap = RiraCapability(_BaseClientStub(resp))
-        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
-        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
+        with self.assertRaises(ResultadoRiraIncerto):
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
 
     def test_identifier_system_por_chamada_dispensa_env_naming_system(self):
         from rnds_client.capabilities.rira import RiraCapability
@@ -323,7 +326,7 @@ class TestEnviarRira(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="faltou"))
 
-    def test_falha_no_get_de_apoio_nao_derruba_envio_bem_sucedido(self):
+    def test_falha_no_get_de_apoio_mantem_resultado_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
 
         post_ok = httpx.Response(
@@ -333,10 +336,8 @@ class TestEnviarRira(unittest.TestCase):
         )
         stub = _BaseClientStub(post_ok, retry_response=httpx.ReadTimeout("get falhou", request=_req()))
         cap = RiraCapability(stub)
-        resultado = asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
-        self.assertEqual(resultado.http_status, 201)
-        self.assertEqual(resultado.id_rnds_bundle, "4a31-i0b0")
-        self.assertIsNone(resultado.id_rnds_composition)
+        with self.assertRaises(ResultadoRiraIncerto):
+            asyncio.run(cap.enviar_rira(_dados(), "item-1", status_rira="pending"))
 
     def test_timeout_de_autenticacao_e_pre_post_nao_incerto(self):
         from rnds_client.capabilities.rira import RiraCapability
@@ -382,7 +383,7 @@ class TestEnviarRira(unittest.TestCase):
 
         respostas = [
             httpx.HTTPStatusError("401", request=_req(), response=httpx.Response(401, request=_req())),
-            httpx.Response(201, headers={"location": "https://x/Bundle/ok"}, request=_req()),
+            httpx.Response(201, json={"id": "ok", "entry": [{"resource": {"resourceType": "Composition", "id": "c1"}}]}, headers={"location": "https://x/Bundle/ok"}, request=_req()),
         ]
 
         class _Stub:
@@ -475,10 +476,12 @@ class TestConsultarRira(unittest.TestCase):
                 return f"https://x/api/{path}"
 
             async def request_with_retry(self, method, url, **kwargs):
-                capturado["method"] = method
-                capturado["url"] = url
-                capturado["params"] = kwargs.get("params")
-                return _resp
+                if url.endswith("/identifier"):
+                    capturado["method"] = method
+                    capturado["url"] = url
+                    capturado["params"] = kwargs.get("params")
+                    return _resp
+                return httpx.Response(200, json=_resp.json()["entry"][0]["resource"], request=httpx.Request("GET", url))
 
         _resp = self._resposta_identifier()
         cap = RiraCapability(_Stub())
@@ -511,6 +514,293 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(
             asyncio.run(cap.consultar_rira("http://ns/BRRNDS-9999", "sumiu")), []
         )
+
+    def test_consulta_detalha_estado_predecessor_e_dados_clinicos(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        documento = montar_bundle(_dados(data_agendamento="2024-01-20T09:00:00-03:00"), RiraFhirSettings.from_environment(), "booked", "c0")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json={"resourceType": "Bundle", "entry": [{"resource": {"resourceType": "Bundle", "id": "b1"}}]}, request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return busca if url.endswith("/identifier") else detalhe
+
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(resultado.status_rira, "booked")
+        self.assertEqual(resultado.predecessor_composition_id, "c0")
+        self.assertEqual(resultado.dados_clinicos["sigtap"], "0101010010")
+        self.assertEqual(resultado.dados_clinicos["identificador_local"], "item-1")
+        self.assertEqual(resultado.dados_clinicos["appointment_start"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["appointment_end"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["service_request_occurrence"], "2024-01-20T09:00:00-03:00")
+        self.assertEqual(resultado.dados_clinicos["observacao"], "Sem observações")
+        self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+
+    def test_consulta_extrai_bundle_de_location_versionada(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        location = "https://x/api/fhir/r4/Bundle/b1/_history/2"
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json=[{"location": location}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/fhir/r4/Bundle/b1"))
+
+        class _Stub:
+            def __init__(self):
+                self.urls = []
+
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                self.urls.append(url)
+                return busca if url.endswith("/identifier") else detalhe
+
+        stub = _Stub()
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(stub.urls[-1], "https://x/fhir/r4/Bundle/b1")
+        self.assertEqual(resultado.location_rnds, location)
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+
+    def test_consulta_prefere_id_explicito_a_location(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        location = "https://x/api/fhir/r4/Bundle/outro/_history/2"
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        busca = httpx.Response(200, json=[{"id": "b1", "location": location}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/fhir/r4/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                if url.endswith("/identifier"):
+                    return busca
+                self.url_detalhe = url
+                return detalhe
+
+        stub = _Stub()
+        resultado = asyncio.run(RiraCapability(stub).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(stub.url_detalhe, "https://x/fhir/r4/Bundle/b1")
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.location_rnds, location)
+
+    def test_consulta_usa_somente_relacao_replaces(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending", "c0")
+        composition = documento["entry"][0]["resource"]
+        composition["relatesTo"].insert(
+            0, {"code": "appends", "targetReference": {"reference": "Composition/outra"}}
+        )
+
+        _, predecessor, _ = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertEqual(predecessor, "c0")
+
+        composition["relatesTo"] = composition["relatesTo"][:1]
+        _, predecessor, _ = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(predecessor)
+
+    def test_datas_normalizadas_refletem_fallback_da_autorizacao(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        autorizacao = "2024-01-19T08:00:00-03:00"
+        documento = montar_bundle(
+            _dados(data_autorizacao=autorizacao), RiraFhirSettings.from_environment(), "booked"
+        )
+
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados["appointment_start"], autorizacao)
+        self.assertEqual(dados["appointment_end"], autorizacao)
+        self.assertNotIn("data_agendamento", dados)
+
+    def test_data_final_nao_inventa_atendimento(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        agendamento = "2024-01-20T09:00:00-03:00"
+        documento = montar_bundle(
+            _dados(data_agendamento=agendamento), RiraFhirSettings.from_environment(), "attended"
+        )
+
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados["appointment_start"], agendamento)
+        self.assertEqual(dados["appointment_end"], agendamento)
+        self.assertNotIn("data_atendimento", dados)
+
+    def test_consulta_normaliza_observacao_clinica(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(
+            _dados(observacao="Dor lombar crônica"), RiraFhirSettings.from_environment(), "pending"
+        )
+
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados["observacao"], "Dor lombar crônica")
+
+    def test_consulta_seleciona_codigos_pelo_sistema_fhir(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+        from rnds_client.rira.codesystems import (
+            CBO_SYSTEM,
+            CID10_SYSTEM,
+            MODALIDADE_SYSTEM,
+            SIGTAP_SYSTEM,
+            STATUS_REGULACAO_SYSTEM,
+        )
+
+        documento = montar_bundle(
+            _dados(sigtap="0301010010", cbo_executante="223505"),
+            RiraFhirSettings.from_environment(),
+            "pending",
+        )
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+        conceitos = (
+            (recursos["ServiceRequest"]["code"], SIGTAP_SYSTEM),
+            (recursos["Condition"]["code"], CID10_SYSTEM),
+            (recursos["ServiceRequest"]["category"][0], MODALIDADE_SYSTEM),
+            (recursos["ServiceRequest"]["performerType"], CBO_SYSTEM),
+            (recursos["Composition"]["event"][0]["code"][0], STATUS_REGULACAO_SYSTEM),
+        )
+        for conceito, system in conceitos:
+            self.assertEqual(conceito["coding"][0]["system"], system)
+            conceito["coding"].insert(0, {"system": "http://local", "code": "codigo-local"})
+
+        status, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertEqual(status, "pending")
+        self.assertEqual(dados["sigtap"], "0301010010")
+        self.assertEqual(dados["cid10"], "J180")
+        self.assertEqual(dados["modalidade"], "09")
+        self.assertEqual(dados["cbo_executante"], "223505")
+
+    def test_consulta_nao_confirma_codigo_ausente_ou_conflitante(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+        from rnds_client.rira.codesystems import SIGTAP_SYSTEM, STATUS_REGULACAO_SYSTEM
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+        recursos["ServiceRequest"]["code"]["coding"] = [
+            {"system": "http://local", "code": "0101010010"}
+        ]
+        recursos["Composition"]["event"][0]["code"][0]["coding"].append(
+            {"system": STATUS_REGULACAO_SYSTEM, "code": "booked"}
+        )
+
+        status, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(status)
+        self.assertIsNone(dados["sigtap"])
+
+        recursos["ServiceRequest"]["code"]["coding"] = [
+            {"system": SIGTAP_SYSTEM, "code": "0101010010"},
+            {"system": SIGTAP_SYSTEM, "code": "0202020020"},
+        ]
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados["sigtap"])
+
+    def test_ocorrencia_diferencia_bundles_com_mesmas_datas_do_appointment(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        inicio = "2024-01-20T09:00:00-03:00"
+        fim = "2024-01-20T10:00:00-03:00"
+        agendado = montar_bundle(
+            _dados(data_agendamento=inicio, data_atendimento=fim),
+            RiraFhirSettings.from_environment(),
+            "attended",
+        )
+        autorizado = montar_bundle(
+            _dados(data_autorizacao=inicio, data_atendimento=fim),
+            RiraFhirSettings.from_environment(),
+            "attended",
+        )
+
+        _, _, dados_agendado = _normalizar_documento(agendado, _IDENTIFIER_SYSTEM)
+        _, _, dados_autorizado = _normalizar_documento(autorizado, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados_agendado["appointment_start"], dados_autorizado["appointment_start"])
+        self.assertEqual(dados_agendado["appointment_end"], dados_autorizado["appointment_end"])
+        self.assertEqual(dados_agendado["service_request_occurrence"], inicio)
+        self.assertEqual(dados_autorizado["service_request_occurrence"], fim)
+
+    def test_identificador_com_sistema_ou_valor_invalido_impede_conciliacao(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        original = montar_bundle(
+            _dados(cnes_executante="7654321"), RiraFhirSettings.from_environment(), "pending"
+        )
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in original["entry"]}
+        identificadores = (
+            ("bundle", original["identifier"]),
+            ("paciente_solicitacao", recursos["ServiceRequest"]["subject"]["identifier"]),
+            ("paciente_composicao", recursos["Composition"]["subject"]["identifier"]),
+            ("paciente_condicao", recursos["Condition"]["subject"]["identifier"]),
+            ("paciente_agendamento", recursos["Appointment"]["participant"][0]["actor"]["identifier"]),
+            ("solicitante", recursos["ServiceRequest"]["requester"]["identifier"]),
+            ("executante", recursos["ServiceRequest"]["performer"][0]["identifier"]),
+            ("autor", recursos["Composition"]["author"][0]["identifier"]),
+        )
+        for nome, identificador in identificadores:
+            for alteracao in ({"system": "http://outro"}, {"system": None}, {"value": None}):
+                with self.subTest(campo=nome, alteracao=alteracao):
+                    documento = deepcopy(original)
+                    recursos_copia = {e["resource"]["resourceType"]: e["resource"] for e in documento["entry"]}
+                    alvos = {
+                        "bundle": documento["identifier"],
+                        "paciente_solicitacao": recursos_copia["ServiceRequest"]["subject"]["identifier"],
+                        "paciente_composicao": recursos_copia["Composition"]["subject"]["identifier"],
+                        "paciente_condicao": recursos_copia["Condition"]["subject"]["identifier"],
+                        "paciente_agendamento": recursos_copia["Appointment"]["participant"][0]["actor"]["identifier"],
+                        "solicitante": recursos_copia["ServiceRequest"]["requester"]["identifier"],
+                        "executante": recursos_copia["ServiceRequest"]["performer"][0]["identifier"],
+                        "autor": recursos_copia["Composition"]["author"][0]["identifier"],
+                    }
+                    self.assertEqual(alvos[nome], identificador)
+                    alvos[nome].update(alteracao)
+                    _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                    self.assertIsNone(dados)
+
+    def test_executante_ausente_e_valido_mas_presente_invalido_nao_e(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        sr = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "ServiceRequest")
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados["cnes_executante"])
+
+        sr["performer"] = [{"identifier": {"system": "http://outro", "value": "1234567"}}]
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
+    def test_consulta_mantem_ids_quando_bundle_tem_sistema_invalido(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        documento["identifier"]["system"] = "http://outro"
+        busca = httpx.Response(200, json=[{"id": "b1", "location": "Bundle/b1"}], request=httpx.Request("GET", "https://x/identifier"))
+        detalhe = httpx.Response(200, json=documento, request=httpx.Request("GET", "https://x/Bundle/b1"))
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return busca if url.endswith("/identifier") else detalhe
+
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+        self.assertEqual(resultado.location_rnds, "Bundle/b1")
+        self.assertIsNone(resultado.dados_clinicos)
 
 
 if __name__ == "__main__":

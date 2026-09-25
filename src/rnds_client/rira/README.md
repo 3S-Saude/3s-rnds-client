@@ -9,11 +9,11 @@ A partir de dados de negócio simples (`RiraDocumentData`), o módulo monta um
 do manual da RNDS/DATASUS e faz o `POST` para o endpoint `fhir/r4/Bundle`. Para
 inspecionar o JSON exato do Bundle, use [`dump_bundle_json`](#api-clientrira).
 
-> Contrato **`0.3.0`** — *stateless*: o módulo **não** é um app Django, não roda
+> Contrato **`0.3.2`** — *stateless*: o módulo **não** é um app Django, não roda
 > `migrate` e não grava nada em banco. Ele não guarda estado de envio — quem chama
 > é dono do identificador local e da cadeia de substituição. Ver
 > [Atualização de versão](#atualização-de-versão) e
-> [`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md).
+> [`docs/rira-evolucao-0.3.2.md`](../../../docs/rira-evolucao-0.3.2.md).
 
 ---
 
@@ -62,7 +62,8 @@ Para usar, bastam as [variáveis de ambiente](#variáveis-de-ambiente) e um
 ## Variáveis de ambiente
 
 Além das variáveis do cliente base ([README](../../../README.md#configuracao-no-django)),
-o RIRA exige — **todas obrigatórias**; se faltar alguma, o primeiro envio falha:
+o RIRA exige as variáveis abaixo. Os perfis são obrigatórios; o Naming System
+pode ser informado por envio em `identifier_system`:
 
 | Variável                | Descrição                                                                                     |
 |-------------------------|----------------------------------------------------------------------------------------------|
@@ -114,7 +115,7 @@ strings no formato `dateTime` FHIR (ex.: `2024-01-15T10:00:00-03:00`).
 ### Resolução de datas
 
 - `data_solicitacao` é sempre o início do período registrado.
-- Para `booked` / `attended`, preencha `data_agendamento` **ou** `data_autorizacao`
+- Para `booked` / `attended` / `absence`, preencha `data_agendamento` **ou** `data_autorizacao`
   (senão o envio falha — ver [Invariantes e validações](#invariantes-e-validações)).
 - A data final do período é a primeira preenchida entre: `data_atendimento` →
   `data_agendamento` → `data_autorizacao` → `data_solicitacao`.
@@ -131,19 +132,23 @@ resposta ao envio.
 
 ## Ciclo de vida da regulação
 
-`enviar_rira` recebe o `status_rira` da etapa. `booked` e `attended` exigem que
+`enviar_rira` recebe o `status_rira` da etapa. `booked`, `attended` e `absence` exigem que
 uma data de agendamento/autorização esteja preenchida (ver
 [Resolução de datas](#resolução-de-datas)).
 
-| `status_rira`            | Exige data de agendamento? |
-|--------------------------|----------------------------|
-| `pending`                | Não                        |
-| `booked`                 | **Sim**                    |
-| `attended`               | **Sim**                    |
-| `returned-to-requester`  | Não                        |
+| `status_rira`           | `Appointment.status` | `ServiceRequest.status` | Exige agendamento/autorização? |
+|-------------------------|----------------------|-------------------------|--------------------------------|
+| `pending`               | `proposed`           | `active`                | Não                            |
+| `booked`                | `booked`             | `active`                | **Sim**                        |
+| `attended`              | `fulfilled`          | `completed`             | **Sim**                        |
+| `absence`               | `noshow`             | `completed`             | **Sim**                        |
+| `cancelled`             | `cancelled`          | `revoked`               | Não                            |
+| `returned-to-requester` | `waitlist`           | `on-hold`               | Não                            |
 
 Sequência típica: `pending` → `booked` → `attended`, cada envio substituindo o
 anterior (ver [Lógica de substituição](#lógica-de-substituição-relatesto)).
+`absence` registra falta; `cancelled` registra negação/cancelamento e não exclui
+um documento já enviado. A exclusão usa `deletar_documento` explicitamente.
 
 ---
 
@@ -180,14 +185,15 @@ async def enviar():
 | Método                                                                                                              | Retorno                    | Descrição                                                                                                                                    |
 |-------------------------------------------------------------------------------------------------------------------|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
 | `await enviar_rira(dados, identificador_local, *, status_rira, identifier_system=None, predecessor_composition_id=None)` | `ResultadoEnvioRira`       | Monta o Bundle, envia e devolve o [resultado](#resultado-resultadoenviorira). `identificador_local` vira o `identifier.value` do Bundle. Passe `predecessor_composition_id` para substituir um documento anterior. |
-| `await consultar_rira(identifier_system, identifier_value)`                                                        | `list[ResultadoEnvioRira]` | Consulta por `GET .../identifier?system=&value=&docType=RA` (manual §8.2). 404 / resposta vazia → `[]`.                                        |
+| `await consultar_rira(identifier_system, identifier_value)`                                                        | `list[ResultadoEnvioRira]` | Consulta por `GET .../identifier?system=&value=&docType=RA` (manual §8.2) e busca o Bundle de cada candidato. 404 / resposta vazia → `[]`. |
 | `await get_documento(id_rnds)`                                                                                    | `dict`                     | Consulta o documento na RNDS (com retry). `{}` se a resposta for vazia.                                                                       |
 | `await deletar_documento(id_rnds)`                                                                                | `None`                     | Remove o documento na RNDS (sem retry).                                                                                                       |
 | `dump_bundle_json(dados, composition_status, predecessor_composition_id=None)`                                     | `str`                      | Monta o Bundle e devolve o JSON indentado **sem enviar** (debug/inspeção). Síncrono; exige as variáveis `RIRA_*`.                             |
 
 Todos os métodos são `async`, exceto `dump_bundle_json`.
 
-`status_rira` aceita `pending`, `booked`, `attended`, `returned-to-requester`;
+`status_rira` aceita `pending`, `booked`, `attended`, `absence`, `cancelled` e
+`returned-to-requester`;
 qualquer outro valor levanta `ValueError`.
 
 ---
@@ -205,6 +211,24 @@ por cada item de `consultar_rira`:
 | `id_rnds_composition` | `str \| None`  | Id da `Composition` — lido do corpo da resposta ou por `GET Bundle/{id}`. É o alvo do `relatesTo` do próximo envio. |
 | `codigo_erro`         | `str \| None`  | Preenchido só em cenários de erro tratados sem exceção.                                         |
 | `mensagem_sanitizada` | `str \| None`  | Mensagem de erro já sanitizada (sem dado clínico).                                              |
+| `status_rira`         | `str \| None`  | Estado extraído do código de regulação da `Composition` consultada.                             |
+| `predecessor_composition_id` | `str \| None` | ID da Composition substituída por `relatesTo.code=replaces`.                       |
+| `dados_clinicos`      | `dict \| None` | Campos normalizados do Bundle consultado para conciliação; contém dados clínicos sensíveis.     |
+
+Na consulta, cada código clínico e o estado são selecionados pelo sistema FHIR
+correspondente. Se o sistema esperado estiver ausente ou trouxer códigos
+conflitantes, o valor normalizado é `None`; o consumidor não deve confirmar
+automaticamente esse candidato. `location_rnds` preserva a URL original, mesmo
+quando contém `/_history/<versão>`.
+
+`dados_clinicos` inclui `service_request_occurrence`, extraído diretamente de
+`ServiceRequest.occurrenceDateTime`, além dos limites serializados de
+`Appointment.start/end`. O sistema de `Bundle.identifier` deve coincidir com
+`identifier_system` da consulta; paciente, solicitante, executante e autor
+devem usar seus sistemas FHIR esperados. Identificador obrigatório ausente ou
+identificador presente com sistema/valor inválido torna `dados_clinicos=None`,
+mantendo os IDs do candidato para análise. A ausência legítima do executante
+continua representada por `cnes_executante=None` no dicionário clínico válido.
 
 Para a substituição, guarde `id_rnds_composition` e passe-o como
 `predecessor_composition_id` no envio seguinte.
@@ -219,9 +243,9 @@ Checadas ao montar o Bundle. A falha é convertida por `enviar_rira` em
 diretamente, a falha chega como `pydantic.ValidationError` com a mensagem do RIRA
 embutida.
 
-### 1. Datas obrigatórias em `booked` / `attended`
+### 1. Datas obrigatórias em `booked` / `attended` / `absence`
 
-`status_rira` `booked` e `attended` exigem `data_agendamento` **ou**
+`status_rira` `booked`, `attended` e `absence` exigem `data_agendamento` **ou**
 `data_autorizacao` preenchida em `RiraDocumentData`.
 
 Mensagem:
@@ -304,7 +328,9 @@ o consumidor decide.
 
 ## Atualização de versão
 
-Contrato **`0.3.0`** — *stateless*. Mudanças em relação à `0.2.0` (nunca
-integrada por nenhum consumidor) e o passo a passo estão em
-[`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md). Changelog:
-[README, seção "Versão"](../../../README.md#versao).
+Contrato atual **`0.3.2`** — *stateless*. Estados, conciliação e regras de
+substituição estão em
+[`docs/rira-evolucao-0.3.2.md`](../../../docs/rira-evolucao-0.3.2.md).
+O contrato inicial `0.3.0` e seu passo a passo permanecem em
+[`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md).
+Changelog: [README, seção "Versão"](../../../README.md#versao).
