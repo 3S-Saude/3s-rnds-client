@@ -224,8 +224,10 @@ def _normalizar_documento(bundle: dict) -> tuple[str | None, str | None, dict[st
 
     event = (comp.get("event") or [{}])[0]
     relates = (comp.get("relatesTo") or [{}])[0]
-    predecessor = ((relates.get("targetReference") or {}).get("reference") or "").removeprefix("Composition/") or None
+    referencia = ((relates.get("targetReference") or {}).get("reference") or "").split("/")
+    predecessor = referencia[referencia.index("Composition") + 1] if "Composition" in referencia and len(referencia) > referencia.index("Composition") + 1 else None
     dados = {
+        "identificador_local": (bundle.get("identifier") or {}).get("value"),
         "id_paciente": identificador(sr.get("subject") or comp.get("subject") or {}),
         "sigtap": codigo(sr.get("code") or {}),
         "cid10": codigo(condition.get("code") or {}),
