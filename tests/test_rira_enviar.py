@@ -543,6 +543,157 @@ class TestConsultarRira(unittest.TestCase):
         self.assertEqual(resultado.dados_clinicos["autor_cnes"], "1234567")
         self.assertEqual(resultado.id_rnds_composition, "c1")
 
+    def test_consulta_rejeita_copias_clinicas_divergentes(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        original = montar_bundle(
+            _dados(
+                sigtap="0301010010",
+                cbo_executante="223505",
+                data_agendamento="2024-01-20T09:00:00-03:00",
+            ),
+            RiraFhirSettings.from_environment(),
+            "booked",
+            "c0",
+        )
+        alteracoes = (
+            ("SIGTAP no agendamento", "Appointment", "serviceType", "0202020020"),
+            ("modalidade no agendamento", "Appointment", "serviceCategory", "10"),
+            ("modalidade na composicao", "Composition", "category", "10"),
+            ("carater no agendamento", "Appointment", "appointmentType", "urgent"),
+            ("CBO no agendamento", "Appointment", "specialty", "223506"),
+        )
+        for nome, tipo, campo, codigo in alteracoes:
+            with self.subTest(campo=nome):
+                documento = deepcopy(original)
+                recurso = next(
+                    entrada["resource"]
+                    for entrada in documento["entry"]
+                    if entrada["resource"]["resourceType"] == tipo
+                )
+                conceito = recurso[campo][0] if isinstance(recurso[campo], list) else recurso[campo]
+                conceito["coding"][0]["code"] = codigo
+
+                status, predecessor, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                self.assertEqual(status, "booked")
+                self.assertEqual(predecessor, "c0")
+                self.assertIsNone(dados)
+
+    def test_consulta_preserva_ids_quando_copia_clinica_diverge(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        documento = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        documento["id"] = "b1"
+        documento["entry"][0]["resource"]["id"] = "c1"
+        appointment = next(
+            entrada["resource"]
+            for entrada in documento["entry"]
+            if entrada["resource"]["resourceType"] == "Appointment"
+        )
+        appointment["serviceType"][0]["coding"][0]["code"] = "0202020020"
+        busca = httpx.Response(200, json=[{"id": "b1", "location": "Bundle/b1"}])
+        detalhe = httpx.Response(200, json=documento)
+
+        class _Stub:
+            def build_service_url(self, path):
+                return f"https://x/{path}"
+
+            async def request_with_retry(self, method, url, **kwargs):
+                return busca if url.endswith("/identifier") else detalhe
+
+        resultado = asyncio.run(RiraCapability(_Stub()).consultar_rira(_IDENTIFIER_SYSTEM, "item-1"))[0]
+        self.assertEqual(resultado.id_rnds_bundle, "b1")
+        self.assertEqual(resultado.id_rnds_composition, "c1")
+        self.assertEqual(resultado.location_rnds, "Bundle/b1")
+        self.assertEqual(resultado.status_rira, "pending")
+        self.assertIsNone(resultado.dados_clinicos)
+
+    def test_consulta_confere_sistemas_e_todos_os_conceitos_duplicados(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        original = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        recursos = {e["resource"]["resourceType"]: e["resource"] for e in original["entry"]}
+        for tipo, campo in (
+            ("Appointment", "serviceType"),
+            ("Appointment", "serviceCategory"),
+            ("Composition", "category"),
+        ):
+            with self.subTest(recurso=tipo, campo=campo):
+                documento = deepcopy(original)
+                recurso = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == tipo)
+                conceito = recurso[campo][0]
+                codigo_valido = conceito["coding"][0]
+                conceito["coding"].insert(0, {"system": "http://local", "code": "outro"})
+                _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                self.assertIsNotNone(dados)
+
+                for sistema_invalido in (None, "http://outro"):
+                    codigo_valido["system"] = sistema_invalido
+                    _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                    self.assertIsNone(dados)
+
+                conceito["coding"] = [{"system": "http://local", "code": "outro"}, {
+                    "system": recursos[tipo][campo][0]["coding"][0]["system"], "code": codigo_valido["code"]
+                }]
+                recurso[campo].append({"coding": [{
+                    "system": recursos[tipo][campo][0]["coding"][0]["system"], "code": "divergente"
+                }]})
+                _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                self.assertIsNone(dados)
+
+        for tipo, campo in (("Appointment", "appointmentType"), ("Appointment", "serviceType")):
+            with self.subTest(recurso=tipo, campo=campo, ausencia=True):
+                documento = deepcopy(original)
+                appointment = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == tipo)
+                appointment[campo] = None
+                _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                self.assertIsNone(dados)
+
+        documento = deepcopy(original)
+        appointment = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "Appointment")
+        appointment["appointmentType"]["coding"][0]["system"] = "http://outro"
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
+    def test_consulta_distingue_cbo_opcional_ausente_de_invalido(self):
+        from rnds_client.capabilities.rira import _normalizar_documento
+
+        sem_cbo = montar_bundle(_dados(), RiraFhirSettings.from_environment(), "pending")
+        _, _, dados = _normalizar_documento(sem_cbo, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados["cbo_executante"])
+
+        com_cbo = montar_bundle(
+            _dados(cbo_executante="223505"), RiraFhirSettings.from_environment(), "pending"
+        )
+        _, _, dados = _normalizar_documento(com_cbo, _IDENTIFIER_SYSTEM)
+        self.assertEqual(dados["cbo_executante"], "223505")
+
+        for remover in ("ServiceRequest", "Appointment"):
+            with self.subTest(remover=remover):
+                documento = deepcopy(com_cbo)
+                recurso = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == remover)
+                recurso.pop("performerType" if remover == "ServiceRequest" else "specialty")
+                _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+                self.assertIsNone(dados)
+
+        documento = deepcopy(sem_cbo)
+        appointment = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "Appointment")
+        appointment["specialty"] = [{"coding": [{"system": "http://outro", "code": "223505"}]}]
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
+        documento = deepcopy(com_cbo)
+        appointment = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "Appointment")
+        appointment["specialty"][0]["coding"][0]["system"] = "http://outro"
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
+        documento = deepcopy(com_cbo)
+        service_request = next(e["resource"] for e in documento["entry"] if e["resource"]["resourceType"] == "ServiceRequest")
+        service_request["performerType"]["coding"][0]["system"] = "http://outro"
+        _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
+        self.assertIsNone(dados)
+
     def test_consulta_extrai_bundle_de_location_versionada(self):
         from rnds_client.capabilities.rira import RiraCapability
 
@@ -698,14 +849,14 @@ class TestConsultarRira(unittest.TestCase):
 
         status, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
         self.assertIsNone(status)
-        self.assertIsNone(dados["sigtap"])
+        self.assertIsNone(dados)
 
         recursos["ServiceRequest"]["code"]["coding"] = [
             {"system": SIGTAP_SYSTEM, "code": "0101010010"},
             {"system": SIGTAP_SYSTEM, "code": "0202020020"},
         ]
         _, _, dados = _normalizar_documento(documento, _IDENTIFIER_SYSTEM)
-        self.assertIsNone(dados["sigtap"])
+        self.assertIsNone(dados)
 
     def test_ocorrencia_diferencia_bundles_com_mesmas_datas_do_appointment(self):
         from rnds_client.capabilities.rira import _normalizar_documento

@@ -8,6 +8,7 @@ from httpx import HTTPError, HTTPStatusError, Response
 
 from rnds_client.base_client import RndsBaseClient
 from rnds_client.rira.codesystems import (
+    APPOINTMENT_TYPE_SYSTEM,
     CBO_SYSTEM,
     CID10_SYSTEM,
     CNES_SYSTEM,
@@ -228,17 +229,30 @@ def _normalizar_documento(
     condition = recursos.get("Condition", {})
     appointment = recursos.get("Appointment", {})
 
-    def codigo(concept: dict, system: str) -> str | None:
-        codings = (concept.get("coding") or []) if isinstance(concept, dict) else []
-        codigos = {
-            coding.get("code")
-            for coding in codings
-            if isinstance(coding, dict)
-            and coding.get("system") == system
-            and isinstance(coding.get("code"), str)
-            and coding.get("code")
-        }
+    def codigo(concept: Any, system: str) -> str | None:
+        codings = concept.get("coding") if isinstance(concept, dict) else None
+        if not isinstance(codings, list):
+            return None
+        codigos = set()
+        for coding in codings:
+            if not isinstance(coding, dict):
+                return None
+            if coding.get("system") == system:
+                valor = coding.get("code")
+                if not isinstance(valor, str) or not valor:
+                    return None
+                codigos.add(valor)
         return next(iter(codigos)) if len(codigos) == 1 else None
+
+    def codigo_lista(concepts: Any, system: str) -> str | None:
+        if not isinstance(concepts, list) or not concepts:
+            return None
+        codings = []
+        for concept in concepts:
+            if not isinstance(concept, dict) or not isinstance(concept.get("coding"), list):
+                return None
+            codings.extend(concept["coding"])
+        return codigo({"coding": codings}, system)
 
     def identificador(ref: Any, system: str, *, opcional: bool = False) -> tuple[str | None, bool]:
         if ref is None:
@@ -306,17 +320,42 @@ def _normalizar_documento(
         and autor_valido
     ):
         return status_rira, predecessor, None
+
+    sigtap = codigo(sr.get("code"), SIGTAP_SYSTEM)
+    modalidade = codigo_lista(sr.get("category"), MODALIDADE_SYSTEM)
+    carater = sr.get("priority")
+    cbo_executante = codigo(sr.get("performerType"), CBO_SYSTEM)
+    especialidade = appointment.get("specialty")
+    cbo_consistente = (
+        sr.get("performerType") is None and especialidade in (None, [])
+    ) or (
+        cbo_executante is not None
+        and cbo_executante == codigo_lista(especialidade, CBO_SYSTEM)
+    )
+    if not (
+        sigtap is not None
+        and sigtap == codigo_lista(appointment.get("serviceType"), SIGTAP_SYSTEM)
+        and modalidade is not None
+        and modalidade == codigo_lista(appointment.get("serviceCategory"), MODALIDADE_SYSTEM)
+        and modalidade == codigo_lista(comp.get("category"), MODALIDADE_SYSTEM)
+        and isinstance(carater, str)
+        and bool(carater)
+        and carater == codigo(appointment.get("appointmentType"), APPOINTMENT_TYPE_SYSTEM)
+        and cbo_consistente
+    ):
+        return status_rira, predecessor, None
+
     dados = {
         "identificador_local": identificador_local,
         "id_paciente": id_paciente,
-        "sigtap": codigo(sr.get("code") or {}, SIGTAP_SYSTEM),
+        "sigtap": sigtap,
         "cid10": codigo(condition.get("code") or {}, CID10_SYSTEM),
         "data_solicitacao": sr.get("authoredOn"),
         "cnes_solicitante": cnes_solicitante,
-        "modalidade": codigo((sr.get("category") or [{}])[0], MODALIDADE_SYSTEM),
-        "carater": sr.get("priority"),
+        "modalidade": modalidade,
+        "carater": carater,
         "cnes_executante": cnes_executante,
-        "cbo_executante": codigo(sr.get("performerType") or {}, CBO_SYSTEM),
+        "cbo_executante": cbo_executante,
         "appointment_start": appointment.get("start"),
         "appointment_end": appointment.get("end"),
         "service_request_occurrence": sr.get("occurrenceDateTime"),
