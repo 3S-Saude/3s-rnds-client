@@ -7,10 +7,6 @@ from unittest import mock
 os.environ.update(
     {
         "RIRA_NAMING_SYSTEM_ID": "9999",
-        "RIRA_COMP_PROFILE": "http://test/comp",
-        "RIRA_SR_PROFILE": "http://test/sr",
-        "RIRA_APP_PROFILE": "http://test/app",
-        "RIRA_COND_PROFILE": "http://test/cond",
     }
 )
 
@@ -85,7 +81,7 @@ class TestClassificacaoErro(unittest.TestCase):
         self.assertEqual(erro.codigo, "completude")
 
     def test_config_ausente_e_rejeitada_como_configuracao(self):
-        erro = classificar_erro_http(KeyError("RIRA_COMP_PROFILE"))
+        erro = classificar_erro_http(KeyError("RIRA_NAMING_SYSTEM_ID"))
         self.assertIsInstance(erro, ErroRiraRejeitado)
         self.assertEqual(erro.codigo, "configuracao")
 

@@ -112,16 +112,12 @@ RNDS_PASSWORD=
 
 # RIRA (so com rnds_client.rira)
 RIRA_NAMING_SYSTEM_ID=
-RIRA_COMP_PROFILE=
-RIRA_SR_PROFILE=
-RIRA_APP_PROFILE=
-RIRA_COND_PROFILE=
 ```
 
 - `RNDS_API_URL` e `RNDS_AUTH_TOKEN_URL` sao sempre obrigatorias. `RNDS_CNS_GESTOR` e opcional (aceita tambem `CNS_SEC_SAUDE`, por compatibilidade).
 - Autenticacao: use o bloco **CERT** (`RNDS_CERT`, `RNDS_KEY`) ou o bloco **API** (`RNDS_AUTH_LOGIN_URL`, `RNDS_USER`, `RNDS_PASSWORD`).
 - Sem `RNDS_AUTH_METHOD`, o pacote escolhe `API` quando houver `RNDS_USER` ou `RNDS_PASSWORD`; caso contrario, `CERT`.
-- As `RIRA_*` so sao lidas se voce usar `rnds_client.rira`; o que cada uma faz esta em [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#variáveis-de-ambiente).
+- `RIRA_NAMING_SYSTEM_ID` so e lida se voce usar `rnds_client.rira`; os quatro perfis FHIR sao constantes versionadas no cliente. Veja [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#variáveis-de-ambiente).
 
 ## RIRA (Registro de Informacoes da Regulacao Assistencial)
 
@@ -207,7 +203,9 @@ Versao atual: `0.3.2` (contrato RIRA *stateless* — ver
 [docs/rira-evolucao-0.3.2.md](docs/rira-evolucao-0.3.2.md)).
 
 `0.3.2` — estados `absence` e `cancelled`, consulta detalhada para conciliacao
-de respostas incertas e confirmacao dos IDs do Bundle e da Composition.
+de respostas incertas e confirmacao dos IDs do Bundle e da Composition. Os
+perfis de Composition, ServiceRequest, Appointment e Condition sao fixados no
+codigo; `RiraFhirSettings.from_environment()` nao le variaveis de perfil.
 
 `0.3.1` — correcoes sobre `0.3.0`:
 

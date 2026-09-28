@@ -62,16 +62,20 @@ Para usar, bastam as [variáveis de ambiente](#variáveis-de-ambiente) e um
 ## Variáveis de ambiente
 
 Além das variáveis do cliente base ([README](../../../README.md#configuracao-no-django)),
-o RIRA exige as variáveis abaixo. Os perfis são obrigatórios; o Naming System
-pode ser informado por envio em `identifier_system`:
+o RIRA usa `RIRA_NAMING_SYSTEM_ID` para identificar a instância. O Naming System
+também pode ser informado por envio em `identifier_system`:
 
-| Variável                | Descrição                                                                                     |
-|-------------------------|----------------------------------------------------------------------------------------------|
-| `RIRA_NAMING_SYSTEM_ID` | Sufixo do NamingSystem que identifica o Bundle (`.../NamingSystem/BRRNDS-<id>`).             |
-| `RIRA_COMP_PROFILE`     | URL do perfil FHIR do recurso `Composition`.                                                 |
-| `RIRA_SR_PROFILE`       | URL do perfil FHIR do recurso `ServiceRequest`.                                              |
-| `RIRA_APP_PROFILE`      | URL do perfil FHIR do recurso `Appointment`.                                                 |
-| `RIRA_COND_PROFILE`     | URL do perfil FHIR do recurso `Condition`.                                                   |
+| Variável                | Descrição                                                                         |
+|-------------------------|----------------------------------------------------------------------------------|
+| `RIRA_NAMING_SYSTEM_ID` | Sufixo do NamingSystem que identifica o Bundle (`.../NamingSystem/BRRNDS-<id>`). |
+
+Os perfis de `Composition`, `ServiceRequest`, `Appointment` e `Condition` são
+constantes versionadas em `rnds_client.rira.settings`. As antigas variáveis
+`RIRA_COMP_PROFILE`, `RIRA_SR_PROFILE`, `RIRA_APP_PROFILE` e
+`RIRA_COND_PROFILE` não são lidas por `RiraFhirSettings.from_environment()`;
+valores ainda presentes no ambiente não alteram o Bundle. A construção explícita
+de `RiraFhirSettings` continua aceitando perfis informados em código para
+compatibilidade e testes.
 
 O `identifier.system` do Bundle vem de `RIRA_NAMING_SYSTEM_ID` por padrão; o
 chamador pode sobrepor por envio passando `identifier_system=` a `enviar_rira`
