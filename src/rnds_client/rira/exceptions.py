@@ -27,6 +27,7 @@ class ErroRiraRejeitado(RuntimeError):
 
 class ResultadoRiraIncerto(RuntimeError):
 
-    def __init__(self, mensagem: str, *, codigo: str) -> None:
+    def __init__(self, mensagem: str, *, codigo: str, http_status: int | None = None) -> None:
         super().__init__(mensagem)
         self.codigo = codigo
+        self.http_status = http_status

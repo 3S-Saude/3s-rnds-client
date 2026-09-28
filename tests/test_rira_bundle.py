@@ -1,13 +1,10 @@
 import os
 import unittest
+from unittest import mock
 
 _RIRA_ENV = {
     "RIRA_NAMING_SYSTEM_ID": "9999",
     "RIRA_CNES_AUTOR": "1234567",
-    "RIRA_COMP_PROFILE": "http://test/comp",
-    "RIRA_SR_PROFILE": "http://test/sr",
-    "RIRA_APP_PROFILE": "http://test/app",
-    "RIRA_COND_PROFILE": "http://test/cond",
 }
 os.environ.update(_RIRA_ENV)
 
@@ -25,6 +22,12 @@ from rnds_client.rira.settings import RiraFhirSettings  # noqa: E402
 
 _SETTINGS = RiraFhirSettings.from_environment()
 _DATA_AGENDAMENTO = "2024-01-20T09:00:00-03:00"
+_PERFIS_CANONICOS = {
+    "Composition": ["http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRegulacaoAssistencial"],
+    "ServiceRequest": ["http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRequisicaoRegulacaoAssistencial"],
+    "Appointment": ["http://www.saude.gov.br/fhir/r4/StructureDefinition/BRAgendamentoRegulacaoAssistencial"],
+    "Condition": ["http://www.saude.gov.br/fhir/r4/StructureDefinition/BRCID10Avaliado-1.0"],
+}
 
 
 def _dados(**kwargs) -> RiraDocumentData:
@@ -58,6 +61,13 @@ def _resource(resource_type: str, **kwargs) -> dict:
         for e in _bundle(**kwargs)["entry"]
         if e["resource"]["resourceType"] == resource_type
     )
+
+
+def _perfis(bundle: dict) -> dict:
+    return {
+        entrada["resource"]["resourceType"]: entrada["resource"]["meta"]["profile"]
+        for entrada in bundle["entry"]
+    }
 
 
 class TestEstruturaBundle(unittest.TestCase):
@@ -96,6 +106,47 @@ class TestEstruturaBundle(unittest.TestCase):
 
     def test_bundle_identifier_usa_id_local(self):
         self.assertEqual(self.bundle["identifier"]["value"], "item-1")
+
+    def test_perfis_canonicos_sem_variaveis_de_ambiente(self):
+        with mock.patch.dict(os.environ, _RIRA_ENV, clear=True):
+            configuracao = RiraFhirSettings.from_environment()
+            bundle = montar_bundle(_dados(), configuracao, "pending")
+
+        self.assertEqual(_perfis(bundle), _PERFIS_CANONICOS)
+        self.assertEqual(
+            bundle["identifier"]["system"],
+            "http://www.saude.gov.br/fhir/r4/NamingSystem/BRRNDS-9999",
+        )
+
+    def test_variaveis_antigas_nao_alteram_perfis(self):
+        ambiente = {
+            **_RIRA_ENV,
+            "RIRA_COMP_PROFILE": "http://test/comp",
+            "RIRA_SR_PROFILE": "http://test/sr",
+            "RIRA_APP_PROFILE": "http://test/app",
+            "RIRA_COND_PROFILE": "http://test/cond",
+        }
+        with mock.patch.dict(os.environ, ambiente, clear=True):
+            configuracao = RiraFhirSettings.from_environment()
+            bundle = montar_bundle(_dados(), configuracao, "pending")
+        self.assertEqual(_perfis(bundle), _PERFIS_CANONICOS)
+
+    def test_identificador_system_explicito_dispensa_naming_no_ambiente(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            configuracao = RiraFhirSettings.from_environment(
+                bundle_id_system_override="http://test/naming-system"
+            )
+        self.assertEqual(configuracao.bundle_id_system, "http://test/naming-system")
+
+    def test_construcao_explicita_permanece_compativel(self):
+        configuracao = RiraFhirSettings(
+            naming_system_id="9999",
+            comp_profile="http://test/comp",
+            sr_profile="http://test/sr",
+            app_profile="http://test/app",
+            cond_profile="http://test/cond",
+        )
+        self.assertEqual(configuracao.comp_profile, "http://test/comp")
 
 
 class TestCamposDeNegocio(unittest.TestCase):
@@ -156,12 +207,14 @@ class TestStatusPorRegulacao(unittest.TestCase):
         "pending": ("proposed", "active"),
         "booked": ("booked", "active"),
         "attended": ("fulfilled", "completed"),
+        "absence": ("noshow", "completed"),
+        "cancelled": ("cancelled", "revoked"),
         "returned-to-requester": ("waitlist", "on-hold"),
     }
 
     def _bundle_do_status(self, status: str) -> dict:
         extra = {}
-        if status in ("booked", "attended"):
+        if status in ("booked", "attended", "absence"):
             extra["data_agendamento"] = _DATA_AGENDAMENTO
         return _bundle(_status=status, id_local=f"item-{status}", **extra)
 
@@ -179,6 +232,12 @@ class TestStatusPorRegulacao(unittest.TestCase):
                 )
                 self.assertEqual(appt["status"], appt_esperado)
                 self.assertEqual(sr["status"], sr_esperado)
+
+    def test_falta_referencia_o_agendamento_no_evento(self):
+        bundle = self._bundle_do_status("absence")
+        comp = bundle["entry"][0]["resource"]
+        self.assertEqual(comp["event"][0]["code"][0]["coding"][0]["code"], "absence")
+        self.assertTrue(any("reference" in detalhe for detalhe in comp["event"][0]["detail"]))
 
     def test_returned_to_requester_dispensa_datas_no_appointment(self):
         bundle = self._bundle_do_status("returned-to-requester")

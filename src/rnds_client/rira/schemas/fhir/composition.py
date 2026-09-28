@@ -87,7 +87,7 @@ class Composition(BaseModel):
                 CompositionEventDetail(reference=FULLURL_SERVICE_REQUEST),
                 CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes)),
             ]
-        elif composition_status in ("booked", "attended"):
+        elif composition_status in ("booked", "attended", "absence"):
             detail = [
                 CompositionEventDetail(identifier=Identifier(system=CNES_SYSTEM, value=author_cnes)),
                 CompositionEventDetail(reference=FULLURL_APPOINTMENT),

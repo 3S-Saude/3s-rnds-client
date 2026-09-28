@@ -13,7 +13,7 @@ from rnds_client.rira import (
 )
 from rnds_client.settings import AuthMethod, RndsSettings
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "AuthMethod",

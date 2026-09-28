@@ -12,7 +12,12 @@ if TYPE_CHECKING:
     from rnds_client.rira.schemas.rira_document import RiraDocumentData
     from rnds_client.rira.settings import RiraFhirSettings
 
-_STATUS_POR_COMPOSITION = {"attended": "completed", "returned-to-requester": "on-hold"}
+_STATUS_POR_COMPOSITION = {
+    "attended": "completed",
+    "absence": "completed",
+    "cancelled": "revoked",
+    "returned-to-requester": "on-hold",
+}
 
 
 class ServiceRequest(BaseModel):

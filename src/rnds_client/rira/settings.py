@@ -4,13 +4,19 @@ import os
 from dataclasses import dataclass
 
 
+RIRA_COMP_PROFILE = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRegulacaoAssistencial"
+RIRA_SR_PROFILE = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRequisicaoRegulacaoAssistencial"
+RIRA_APP_PROFILE = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BRAgendamentoRegulacaoAssistencial"
+RIRA_COND_PROFILE = "http://www.saude.gov.br/fhir/r4/StructureDefinition/BRCID10Avaliado-1.0"
+
+
 @dataclass
 class RiraFhirSettings:
     naming_system_id: str
-    comp_profile: str
-    sr_profile: str
-    app_profile: str
-    cond_profile: str
+    comp_profile: str = RIRA_COMP_PROFILE
+    sr_profile: str = RIRA_SR_PROFILE
+    app_profile: str = RIRA_APP_PROFILE
+    cond_profile: str = RIRA_COND_PROFILE
     bundle_id_system_override: str | None = None
 
     @classmethod
@@ -24,10 +30,6 @@ class RiraFhirSettings:
                 if exige_naming
                 else os.environ.get("RIRA_NAMING_SYSTEM_ID", "")
             ),
-            comp_profile=os.environ["RIRA_COMP_PROFILE"],
-            sr_profile=os.environ["RIRA_SR_PROFILE"],
-            app_profile=os.environ["RIRA_APP_PROFILE"],
-            cond_profile=os.environ["RIRA_COND_PROFILE"],
             bundle_id_system_override=bundle_id_system_override,
         )
 

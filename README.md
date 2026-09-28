@@ -112,23 +112,21 @@ RNDS_PASSWORD=
 
 # RIRA (so com rnds_client.rira)
 RIRA_NAMING_SYSTEM_ID=
-RIRA_COMP_PROFILE=
-RIRA_SR_PROFILE=
-RIRA_APP_PROFILE=
-RIRA_COND_PROFILE=
 ```
 
 - `RNDS_API_URL` e `RNDS_AUTH_TOKEN_URL` sao sempre obrigatorias. `RNDS_CNS_GESTOR` e opcional (aceita tambem `CNS_SEC_SAUDE`, por compatibilidade).
 - Autenticacao: use o bloco **CERT** (`RNDS_CERT`, `RNDS_KEY`) ou o bloco **API** (`RNDS_AUTH_LOGIN_URL`, `RNDS_USER`, `RNDS_PASSWORD`).
 - Sem `RNDS_AUTH_METHOD`, o pacote escolhe `API` quando houver `RNDS_USER` ou `RNDS_PASSWORD`; caso contrario, `CERT`.
-- As `RIRA_*` so sao lidas se voce usar `rnds_client.rira`; o que cada uma faz esta em [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#variáveis-de-ambiente).
+- `RIRA_NAMING_SYSTEM_ID` so e lida se voce usar `rnds_client.rira`; os quatro perfis FHIR sao constantes versionadas no cliente. Veja [src/rnds_client/rira/README.md](src/rnds_client/rira/README.md#variáveis-de-ambiente).
 
 ## RIRA (Registro de Informacoes da Regulacao Assistencial)
 
 O modulo `rnds_client.rira` envia a RNDS o andamento de uma solicitacao regulada:
-a cada mudanca de status (`pending` -> `booked` -> `attended`, ou
-`returned-to-requester`), monta um documento FHIR a partir de um `RiraDocumentData`
-e faz um `POST`.
+a cada mudanca de status (`pending`, `booked`, `attended`, `absence`,
+`cancelled` ou `returned-to-requester`), monta um documento FHIR a partir de
+um `RiraDocumentData` e faz um `POST`. `absence` representa falta ao atendimento;
+`cancelled` representa negacao ou cancelamento da solicitacao, distinto da
+exclusao de um documento ja enviado.
 
 **Configuracao:** so as variaveis de ambiente `RIRA_*` (bloco `RIRA` da secao
 [Configuracao no Django](#configuracao-no-django)).
@@ -201,8 +199,13 @@ Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.3.1` (contrato RIRA *stateless* — ver
-[docs/rira-evolucao-0.3.0.md](docs/rira-evolucao-0.3.0.md)).
+Versao atual: `0.3.2` (contrato RIRA *stateless* — ver
+[docs/rira-evolucao-0.3.2.md](docs/rira-evolucao-0.3.2.md)).
+
+`0.3.2` — estados `absence` e `cancelled`, consulta detalhada para conciliacao
+de respostas incertas e confirmacao dos IDs do Bundle e da Composition. Os
+perfis de Composition, ServiceRequest, Appointment e Condition sao fixados no
+codigo; `RiraFhirSettings.from_environment()` nao le variaveis de perfil.
 
 `0.3.1` — correcoes sobre `0.3.0`:
 
