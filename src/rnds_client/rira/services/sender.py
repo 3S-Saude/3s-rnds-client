@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -51,6 +52,15 @@ _APPOINTMENT_STATUS_MAP = {
 _STATUS_RETENTAVEIS_4XX = {408, 429}
 _TIMEOUT_EXC = (ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout)
 _POS_POST_INCERTO_EXC = (ReadTimeout, ReadError, RemoteProtocolError, WriteTimeout)
+_CODIGOS_FHIR_SEGUROS = frozenset({
+    "invalid", "structure", "required", "value", "invariant", "business-rule",
+    "processing", "not-supported", "duplicate", "conflict", "incomplete",
+    "exception", "not-found", "timeout", "throttled", "security", "forbidden",
+})
+_CAMPO_FHIR_SEGURO = re.compile(
+    r"^(?:Bundle|Composition|ServiceRequest|Appointment|Condition)"
+    r"(?:\.[A-Za-z][A-Za-z0-9]*|\[[0-9]{1,3}\])*$"
+)
 
 
 def montar_bundle(
@@ -160,6 +170,32 @@ def _erro_de_completude(exc: Exception) -> RiraValidationError | None:
     return None
 
 
+def _diagnostico_fhir_seguro(response: Response) -> tuple[str | None, str | None]:
+    """Lê somente códigos e caminhos FHIR controlados, nunca diagnostics/text."""
+    try:
+        corpo = response.json()
+    except (ValueError, UnicodeDecodeError):
+        return None, None
+    if not isinstance(corpo, dict) or corpo.get("resourceType") != "OperationOutcome":
+        return None, None
+    issues = corpo.get("issue")
+    if not isinstance(issues, list):
+        return None, None
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        codigo = issue.get("code")
+        codigo = codigo if isinstance(codigo, str) and codigo in _CODIGOS_FHIR_SEGUROS else None
+        caminhos = issue.get("expression")
+        campo = next(
+            (valor for valor in caminhos if isinstance(valor, str) and _CAMPO_FHIR_SEGURO.fullmatch(valor)),
+            None,
+        ) if isinstance(caminhos, list) else None
+        if codigo or campo:
+            return codigo, campo
+    return None, None
+
+
 def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Exception:
     completude = _erro_de_completude(exc)
     if completude is not None:
@@ -170,11 +206,17 @@ def classificar_erro_http(exc: Exception, *, apos_post: bool = False) -> Excepti
 
     if isinstance(exc, HTTPStatusError):
         status = exc.response.status_code
+        if apos_post and (status == 408 or 500 <= status < 600):
+            return ResultadoRiraIncerto(str(exc), codigo=f"http_{status}", http_status=status)
         if status in _STATUS_RETENTAVEIS_4XX or 500 <= status < 600:
             return ErroRiraTransitorio(
                 str(exc), codigo=f"http_{status}", retry_after=_retry_after_segundos(exc.response)
             )
-        return ErroRiraRejeitado(str(exc), codigo=f"http_{status}", http_status=status)
+        codigo_fhir, campo_fhir = _diagnostico_fhir_seguro(exc.response)
+        return ErroRiraRejeitado(
+            str(exc), codigo=f"http_{status}", http_status=status,
+            codigo_fhir=codigo_fhir, campo_fhir=campo_fhir,
+        )
 
     if apos_post and isinstance(exc, _POS_POST_INCERTO_EXC):
         return ResultadoRiraIncerto(str(exc), codigo="resposta_perdida")

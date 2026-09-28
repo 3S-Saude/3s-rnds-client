@@ -19,10 +19,20 @@ class ErroRiraTransitorio(RuntimeError):
 
 class ErroRiraRejeitado(RuntimeError):
 
-    def __init__(self, mensagem: str, *, codigo: str, http_status: int | None = None) -> None:
+    def __init__(
+        self,
+        mensagem: str,
+        *,
+        codigo: str,
+        http_status: int | None = None,
+        codigo_fhir: str | None = None,
+        campo_fhir: str | None = None,
+    ) -> None:
         super().__init__(mensagem)
         self.codigo = codigo
         self.http_status = http_status
+        self.codigo_fhir = codigo_fhir
+        self.campo_fhir = campo_fhir
 
 
 class ResultadoRiraIncerto(RuntimeError):
