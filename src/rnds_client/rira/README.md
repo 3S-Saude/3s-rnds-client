@@ -9,11 +9,11 @@ A partir de dados de negócio simples (`RiraDocumentData`), o módulo monta um
 do manual da RNDS/DATASUS e faz o `POST` para o endpoint `fhir/r4/Bundle`. Para
 inspecionar o JSON exato do Bundle, use [`dump_bundle_json`](#api-clientrira).
 
-> Contrato **`0.3.2`** — *stateless*: o módulo **não** é um app Django, não roda
+> Contrato **`0.3.3`** — *stateless*: o módulo **não** é um app Django, não roda
 > `migrate` e não grava nada em banco. Ele não guarda estado de envio — quem chama
 > é dono do identificador local e da cadeia de substituição. Ver
 > [Atualização de versão](#atualização-de-versão) e
-> [`docs/rira-evolucao-0.3.2.md`](../../../docs/rira-evolucao-0.3.2.md).
+> [`docs/rira-evolucao-0.3.3.md`](../../../docs/rira-evolucao-0.3.3.md).
 
 ---
 
@@ -321,9 +321,9 @@ o consumidor decide.
 
 | Exceção                | Quando                                                                                              | Atributos                       |
 |-----------------------|--------------------------------------------------------------------------------------------------|---------------------------------|
-| `ErroRiraTransitorio` | Timeout/DNS/conexão antes da resposta; HTTP `408`, `429`, `5xx`. Vale re-tentar.                    | `codigo`, `retry_after \| None`  |
-| `ErroRiraRejeitado`   | HTTP `4xx` funcional; invariante local violada (`codigo="completude"`). Não adianta re-tentar igual. | `codigo`, `http_status \| None`  |
-| `ResultadoRiraIncerto`| POST enviado mas resposta perdida (timeout/queda após o POST, ou aceite sem `Location` nem corpo). Concilie por `identifier` antes de reenviar. | `codigo`                        |
+| `ErroRiraTransitorio` | Timeout/DNS/conexão antes do POST; HTTP `429` após POST. Vale re-tentar. | `codigo`, `retry_after \| None`  |
+| `ErroRiraRejeitado`   | HTTP `4xx` funcional; invariante local violada (`codigo="completude"`). Não adianta re-tentar igual. | `codigo`, `http_status \| None`, `codigo_fhir \| None`, `campo_fhir \| None`  |
+| `ResultadoRiraIncerto`| POST com resultado desconhecido (timeout/queda, HTTP `408`/`5xx`, ou aceite sem IDs). Concilie por `identifier` antes de reenviar. | `codigo`, `http_status \| None` |
 
 `RndsSubmissionError` e `RiraValidationError` seguem reexportadas em `rnds_client`
 (a segunda é a exceção crua do validator, vista só via `dump_bundle_json`).
@@ -332,8 +332,10 @@ o consumidor decide.
 
 ## Atualização de versão
 
-Contrato atual **`0.3.2`** — *stateless*. Estados, conciliação e regras de
-substituição estão em
+Contrato atual **`0.3.3`** — *stateless*. As regras de resultados incertos e
+diagnósticos seguros estão em
+[`docs/rira-evolucao-0.3.3.md`](../../../docs/rira-evolucao-0.3.3.md).
+O contrato `0.3.2` permanece em
 [`docs/rira-evolucao-0.3.2.md`](../../../docs/rira-evolucao-0.3.2.md).
 O contrato inicial `0.3.0` e seu passo a passo permanecem em
 [`docs/rira-evolucao-0.3.0.md`](../../../docs/rira-evolucao-0.3.0.md).

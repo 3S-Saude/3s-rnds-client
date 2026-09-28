@@ -37,8 +37,8 @@ def _req():
     return httpx.Request("POST", "https://x/api/fhir/r4/Bundle")
 
 
-def _status_error(status, headers=None):
-    resp = httpx.Response(status, headers=headers or {}, request=_req())
+def _status_error(status, headers=None, json=None):
+    resp = httpx.Response(status, headers=headers or {}, json=json, request=_req())
     return httpx.HTTPStatusError("erro", request=_req(), response=resp)
 
 
@@ -60,10 +60,46 @@ class TestClassificacaoErro(unittest.TestCase):
     def test_5xx_transitorio(self):
         self.assertIsInstance(classificar_erro_http(_status_error(503)), ErroRiraTransitorio)
 
+    def test_408_e_5xx_apos_post_exigem_conciliacao(self):
+        for status in (408, 500, 502, 503, 504, 599):
+            erro = classificar_erro_http(_status_error(status), apos_post=True)
+            self.assertIsInstance(erro, ResultadoRiraIncerto, status)
+            self.assertEqual(erro.codigo, f"http_{status}")
+            self.assertEqual(erro.http_status, status)
+
+    def test_429_apos_post_mantem_retry_after(self):
+        erro = classificar_erro_http(_status_error(429, {"Retry-After": "42"}), apos_post=True)
+        self.assertIsInstance(erro, ErroRiraTransitorio)
+        self.assertEqual(erro.retry_after, 42)
+
     def test_4xx_funcional_rejeitado(self):
         erro = classificar_erro_http(_status_error(422))
         self.assertIsInstance(erro, ErroRiraRejeitado)
         self.assertEqual(erro.http_status, 422)
+
+    def test_422_extrai_campo_e_codigo_sem_texto_clinico(self):
+        erro = classificar_erro_http(_status_error(422, json={
+            "resourceType": "OperationOutcome",
+            "issue": [{
+                "severity": "error",
+                "code": "required",
+                "expression": ["ServiceRequest.code.coding[0].code"],
+                "diagnostics": "CPF 12345678901 e observação clínica reservada",
+                "details": {"text": "Nome do paciente"},
+            }],
+        }), apos_post=True)
+        self.assertIsInstance(erro, ErroRiraRejeitado)
+        self.assertEqual(erro.codigo_fhir, "required")
+        self.assertEqual(erro.campo_fhir, "ServiceRequest.code.coding[0].code")
+        self.assertNotIn("12345678901", str((erro.codigo_fhir, erro.campo_fhir)))
+
+    def test_422_descarta_codigo_ou_caminho_nao_controlados(self):
+        erro = classificar_erro_http(_status_error(422, json={
+            "resourceType": "OperationOutcome",
+            "issue": [{"code": "CPF12345678901", "expression": ["Patient.name=Fulano"]}],
+        }), apos_post=True)
+        self.assertIsNone(erro.codigo_fhir)
+        self.assertIsNone(erro.campo_fhir)
 
     def test_validacao_local_rejeitada_por_completude(self):
         erro = classificar_erro_http(RiraValidationError("CBO ausente"))

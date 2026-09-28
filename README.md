@@ -183,12 +183,13 @@ As excecoes proprias do pacote sao:
 - `RndsConfigurationError`
 - `RndsAuthenticationError`
 - Do modulo RIRA, `enviar_rira` converte qualquer falha em um destes tres erros:
-  - `ErroRiraTransitorio` — timeout, erro de conexao ou HTTP 408/429/5xx; vale
-    re-tentar (traz `retry_after` quando a RNDS informa).
+  - `ErroRiraTransitorio` — falha antes do POST ou HTTP 429; vale re-tentar
+    (traz `retry_after` quando a RNDS informa).
   - `ErroRiraRejeitado` — HTTP 4xx funcional ou invariante local violada;
     re-tentar igual nao resolve.
-  - `ResultadoRiraIncerto` — o `POST` foi feito mas a resposta se perdeu; concilie
-    por `identifier` antes de reenviar.
+  - `ResultadoRiraIncerto` — o POST pode ter sido gravado apesar de timeout,
+    HTTP 408/5xx ou resposta incompleta; concilie por `identifier` antes de
+    qualquer novo envio.
 
   `RndsSubmissionError` e `RiraValidationError` continuam exportadas, mas so
   aparecem fora do fluxo de `enviar_rira` (ex.: `RiraValidationError` sobe como
@@ -199,8 +200,13 @@ Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.3.2` (contrato RIRA *stateless* — ver
-[docs/rira-evolucao-0.3.2.md](docs/rira-evolucao-0.3.2.md)).
+Versao atual: `0.3.3` (contrato RIRA *stateless* — ver
+[docs/rira-evolucao-0.3.3.md](docs/rira-evolucao-0.3.3.md)).
+
+`0.3.3` — HTTP `408` e `5xx` recebidos apos o POST passam a resultado incerto:
+o integrador deve consultar a RNDS antes de qualquer novo envio. Rejeicoes
+FHIR expõem apenas `OperationOutcome.issue.code` de uma lista controlada e o
+caminho FHIR validado; texto clinico e resposta bruta nao sao propagados.
 
 `0.3.2` — estados `absence` e `cancelled`, consulta detalhada para conciliacao
 de respostas incertas e confirmacao dos IDs do Bundle e da Composition. Os
