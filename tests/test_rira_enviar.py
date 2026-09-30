@@ -236,6 +236,45 @@ def _dados(**kwargs):
 
 
 class TestEnviarRira(unittest.TestCase):
+    def test_cancelamento_sem_cbo_chega_ao_post_nos_grupos_03_04(self):
+        import json
+        from rnds_client.capabilities.rira import RiraCapability
+
+        for sigtap in ("0301010010", "0401010015"):
+            with self.subTest(sigtap=sigtap):
+                resposta = httpx.Response(
+                    201,
+                    json={"id": "b1", "entry": [{"resource": {"resourceType": "Composition", "id": "c1"}}]},
+                    headers={"location": "https://x/Bundle/b1"},
+                    request=_req(),
+                )
+                stub = _BaseClientStub(resposta)
+                resultado = asyncio.run(RiraCapability(stub).enviar_rira(
+                    _dados(sigtap=sigtap), "item-1", status_rira="cancelled"
+                ))
+                self.assertEqual(resultado.http_status, 201)
+                self.assertEqual(len(stub.chamadas), 1)
+                self.assertEqual(stub.chamadas[0][0], "POST")
+                bundle = json.loads(stub.chamadas[0][2]["content"])
+                recursos = {e["resource"]["resourceType"]: e["resource"] for e in bundle["entry"]}
+                self.assertNotIn("performerType", recursos["ServiceRequest"])
+                self.assertNotIn("specialty", recursos["Appointment"])
+
+    def test_demais_estados_sem_cbo_sao_rejeitados_antes_do_post(self):
+        from rnds_client.capabilities.rira import RiraCapability
+
+        for status in ("pending", "booked", "attended", "absence", "returned-to-requester"):
+            for sigtap in ("0301010010", "0401010015"):
+                with self.subTest(status=status, sigtap=sigtap):
+                    stub = _BaseClientStub(httpx.Response(201, request=_req()))
+                    with self.assertRaises(ErroRiraRejeitado) as ctx:
+                        asyncio.run(RiraCapability(stub).enviar_rira(
+                            _dados(sigtap=sigtap, data_agendamento="2024-01-20T09:00:00-03:00"),
+                            "item-1", status_rira=status,
+                        ))
+                    self.assertEqual(ctx.exception.codigo, "completude")
+                    self.assertEqual(stub.chamadas, [])
+
     def test_devolve_location_bruto_e_ids_separados(self):
         from rnds_client.capabilities.rira import RiraCapability
 

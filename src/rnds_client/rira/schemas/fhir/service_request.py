@@ -39,7 +39,7 @@ class ServiceRequest(BaseModel):
     @model_validator(mode="after")
     def cbo_obrigatorio_grupos_03_04(self) -> ServiceRequest:
         sigtap_grupo = self.code.coding[0].code[:2]
-        if sigtap_grupo in ("03", "04") and self.performerType is None:
+        if self.status != "revoked" and sigtap_grupo in ("03", "04") and self.performerType is None:
             raise RiraValidationError(
                 f"CBO obrigatório para procedimentos SIGTAP do grupo {sigtap_grupo}. "
                 "Preencha cbo_executante em RiraDocumentData."
