@@ -9,11 +9,11 @@ A partir de dados de negócio simples (`RiraDocumentData`), o módulo monta um
 do manual da RNDS/DATASUS e faz o `POST` para o endpoint `fhir/r4/Bundle`. Para
 inspecionar o JSON exato do Bundle, use [`dump_bundle_json`](#api-clientrira).
 
-> Contrato **`0.3.3`** — *stateless*: o módulo **não** é um app Django, não roda
+> Contrato **`0.3.4`** — *stateless*: o módulo **não** é um app Django, não roda
 > `migrate` e não grava nada em banco. Ele não guarda estado de envio — quem chama
 > é dono do identificador local e da cadeia de substituição. Ver
 > [Atualização de versão](#atualização-de-versão) e
-> [`docs/rira-evolucao-0.3.3.md`](../../../docs/rira-evolucao-0.3.3.md).
+> [`docs/rira-evolucao-0.3.4.md`](../../../docs/rira-evolucao-0.3.4.md).
 
 ---
 
@@ -110,7 +110,7 @@ strings no formato `dateTime` FHIR (ex.: `2024-01-15T10:00:00-03:00`).
 |--------------------|---------------|-----------------------------------------------------------------------------------------|
 | `cnes_regulador`    | `str \| None`  | CNES do regulador. Quando presente, é o autor do documento.                             |
 | `cnes_executante`   | `str \| None`  | CNES do estabelecimento executante.                                                     |
-| `cbo_executante`    | `str \| None`  | CBO do profissional executante. **Obrigatório** para SIGTAP dos grupos 03 e 04.        |
+| `cbo_executante`    | `str \| None`  | CBO do profissional executante. **Obrigatório** para SIGTAP 03/04, exceto `cancelled`. |
 | `data_autorizacao`  | `str \| None`  | Data da autorização. Ver [Resolução de datas](#resolução-de-datas).                     |
 | `data_agendamento`  | `str \| None`  | Data do agendamento. Ver [Resolução de datas](#resolução-de-datas).                     |
 | `data_atendimento`  | `str \| None`  | Data do atendimento. Ver [Resolução de datas](#resolução-de-datas).                     |
@@ -262,7 +262,12 @@ Preencha data_agendamento ou data_autorizacao em RiraDocumentData.
 ### 2. CBO obrigatório nos grupos SIGTAP 03 e 04
 
 Se os dois primeiros dígitos do código SIGTAP forem `03` ou `04`
-(procedimentos clínicos / cirúrgicos), `cbo_executante` é obrigatório.
+(procedimentos clínicos / cirúrgicos), `cbo_executante` é obrigatório,
+exceto no evento `cancelled` (`ServiceRequest.status=revoked`). Sem CBO,
+`ServiceRequest.performerType` e `Appointment.specialty` são omitidos;
+quando disponível, o código é preservado nos dois recursos. O integrador
+decide quais estados locais correspondem a esse evento. `Appointment`
+permanece no Bundle com status `cancelled`.
 
 Mensagem:
 
@@ -332,8 +337,9 @@ o consumidor decide.
 
 ## Atualização de versão
 
-Contrato atual **`0.3.3`** — *stateless*. As regras de resultados incertos e
-diagnósticos seguros estão em
+Contrato atual **`0.3.4`** — *stateless*. A exceção de CBO está em
+[`docs/rira-evolucao-0.3.4.md`](../../../docs/rira-evolucao-0.3.4.md).
+As regras de resultados incertos e diagnósticos seguros permanecem em
 [`docs/rira-evolucao-0.3.3.md`](../../../docs/rira-evolucao-0.3.3.md).
 O contrato `0.3.2` permanece em
 [`docs/rira-evolucao-0.3.2.md`](../../../docs/rira-evolucao-0.3.2.md).

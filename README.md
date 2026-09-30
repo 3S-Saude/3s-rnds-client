@@ -200,8 +200,13 @@ Chamadas HTTP tambem podem propagar erros do `httpx`.
 
 ## Versao
 
-Versao atual: `0.3.3` (contrato RIRA *stateless* — ver
-[docs/rira-evolucao-0.3.3.md](docs/rira-evolucao-0.3.3.md)).
+Versao atual: `0.3.4` (contrato RIRA *stateless* — ver
+[docs/rira-evolucao-0.3.4.md](docs/rira-evolucao-0.3.4.md)).
+
+`0.3.4` — CBO opcional em documentos `cancelled`
+(`ServiceRequest.status=revoked`), inclusive SIGTAP 03/04. Quando informado,
+o CBO continua presente em ServiceRequest e Appointment. Demais estados
+preservam a exigencia de CBO; os quatro recursos do Bundle permanecem.
 
 `0.3.3` — HTTP `408` e `5xx` recebidos apos o POST passam a resultado incerto:
 o integrador deve consultar a RNDS antes de qualquer novo envio. Rejeicoes

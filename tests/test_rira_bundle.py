@@ -248,6 +248,45 @@ class TestStatusPorRegulacao(unittest.TestCase):
         self.assertNotIn("start", appt)
 
 
+class TestCboPorEstado(unittest.TestCase):
+    def test_cancelamento_sem_cbo_preserva_recursos_e_substituicao(self):
+        for sigtap in ("0301010010", "0401010015"):
+            for predecessor in (None, "composition-anterior"):
+                with self.subTest(sigtap=sigtap, predecessor=predecessor):
+                    bundle = _bundle(
+                        _status="cancelled", sigtap=sigtap,
+                        _predecessor_composition_id=predecessor,
+                    )
+                    recursos = {e["resource"]["resourceType"]: e["resource"] for e in bundle["entry"]}
+                    self.assertEqual(len(recursos), 4)
+                    self.assertEqual(recursos["ServiceRequest"]["status"], "revoked")
+                    self.assertEqual(recursos["Appointment"]["status"], "cancelled")
+                    self.assertNotIn("performerType", recursos["ServiceRequest"])
+                    self.assertNotIn("specialty", recursos["Appointment"])
+                    composition = recursos["Composition"]
+                    self.assertEqual(composition["event"][0]["code"][0]["coding"][0]["code"], "cancelled")
+                    self.assertEqual(composition["section"][0]["entry"][0]["reference"], "urn:uuid:transient-1")
+                    if predecessor:
+                        self.assertEqual(composition["relatesTo"][0]["targetReference"]["reference"], f"Composition/{predecessor}")
+                    else:
+                        self.assertNotIn("relatesTo", composition)
+
+    def test_cancelamento_preserva_cbo_informado_em_ambos_os_recursos(self):
+        for sigtap in ("0301010010", "0401010015"):
+            with self.subTest(sigtap=sigtap):
+                bundle = _bundle(_status="cancelled", sigtap=sigtap, cbo_executante="225125")
+                recursos = {e["resource"]["resourceType"]: e["resource"] for e in bundle["entry"]}
+                self.assertEqual(recursos["ServiceRequest"]["performerType"]["coding"][0]["code"], "225125")
+                self.assertEqual(recursos["Appointment"]["specialty"][0]["coding"][0]["code"], "225125")
+
+    def test_demais_estados_exigem_cbo_nos_grupos_03_04(self):
+        for status in ("pending", "booked", "attended", "absence", "returned-to-requester"):
+            for sigtap in ("0301010010", "0401010015"):
+                with self.subTest(status=status, sigtap=sigtap):
+                    with self.assertRaisesRegex(ValueError, "CBO obrigatório"):
+                        _bundle(_status=status, sigtap=sigtap, data_agendamento=_DATA_AGENDAMENTO)
+
+
 class TestAppointmentExigeDatas(unittest.TestCase):
 
     def test_pending_nao_exige_data_agendamento(self):
