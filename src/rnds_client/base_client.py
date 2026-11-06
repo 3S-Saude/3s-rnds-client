@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from contextlib import nullcontext
 
 from httpx import AsyncClient, HTTPError, HTTPStatusError, Response
 
@@ -29,40 +30,57 @@ class RndsBaseClient:
         http_client: AsyncClient,
         response: Response | None = None,
         access_token: AccessToken | None = None,
+        *, attempts: int = 5, token_cache=None, token_lock=None,
     ) -> None:
         self._settings = settings
         self._http_client = http_client
         self._response = response
         self._access_token = access_token
+        if attempts < 1:
+            raise ValueError("O número de tentativas deve ser positivo.")
+        self._attempts = attempts
+        self._token_cache = token_cache
+        self._token_lock = token_lock or nullcontext
 
     @classmethod
-    async def create(cls) -> "RndsBaseClient":
+    async def create(cls, *, http_timeout=None, attempts: int = 5, token_cache=None, token_lock=None) -> "RndsBaseClient":
         settings = RndsSettings.from_environment()
-        http_client = build_http_client(settings)
-        client = cls(settings=settings, http_client=http_client)
-
+        http_client = build_http_client(settings) if http_timeout is None else build_http_client(settings, timeout=http_timeout)
         try:
+            client = cls(settings=settings, http_client=http_client, attempts=attempts,
+                         token_cache=token_cache, token_lock=token_lock)
             await client._ensure_access_token()
-        except Exception:
+        except BaseException:
             await http_client.aclose()
             raise
-
         return client
 
+    async def _load_token(self):
+        if self._token_cache is not None:
+            return await self._token_cache.load()
+        return await asyncio.to_thread(DjangoTokenCache().load)
+
     async def _ensure_access_token(self, force_refresh: bool = False) -> AccessToken:
+        anterior = self._access_token
         if not force_refresh:
-            cached_access_token = DjangoTokenCache().load()
-            if cached_access_token is not None:
-                self._access_token = cached_access_token
-                return cached_access_token
-
-        response = await self._authenticate(self._settings, self._http_client)
-        access_token = AccessToken.from_response(response)
-        DjangoTokenCache().save(access_token)
-
-        self._response = response
-        self._access_token = access_token
-        return access_token
+            cached = await self._load_token()
+            if cached is not None:
+                self._access_token = cached
+                return cached
+        async with self._token_lock():
+            cached = await self._load_token()
+            if cached is not None and (not force_refresh or (anterior and cached.value != anterior.value)):
+                self._access_token = cached
+                return cached
+            response = await self._authenticate(self._settings, self._http_client)
+            access_token = AccessToken.from_response(response)
+            if self._token_cache is not None:
+                await self._token_cache.save(access_token)
+            else:
+                await asyncio.to_thread(DjangoTokenCache().save, access_token)
+            self._response = response
+            self._access_token = access_token
+            return access_token
 
     @staticmethod
     async def _authenticate(settings: RndsSettings, http_client: AsyncClient) -> Response:
@@ -125,10 +143,11 @@ class RndsBaseClient:
         method: str,
         url: str,
         *,
-        attempts: int = 5,
+        attempts: int | None = None,
         non_retryable_statuses: set[int] | None = None,
         **kwargs: Any,
     ) -> Response | None:
+        attempts = self._attempts if attempts is None else attempts
         last_error: HTTPError | None = None
 
         for attempt in range(attempts):

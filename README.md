@@ -266,3 +266,13 @@ A suite usa `unittest` (nao ha `pytest` nas dependencias) e nao precisa de
 
 - SemVer. `version` em `pyproject.toml` e `rnds_client.__version__` devem casar.
 - A publicacao no PyPI e automatica no merge do PR em `main` (`.github/workflows/publish.yml`).
+
+### Política de resiliência por consumidor (0.3.5)
+
+`RndsClient.create(http_timeout=..., attempts=1, token_cache=..., token_lock=...)`
+aceita timeout HTTPX, tentativas e cache assíncrono (`load`/`save`) explícitos.
+`token_lock` é uma fábrica de context manager assíncrono compartilhado. O cache
+é relido sob o lock para evitar autenticações simultâneas. O prazo global do caso
+de uso continua sendo responsabilidade do consumidor. Cancelamento durante a
+criação fecha o cliente HTTP antes de propagar a exceção. Sem opções explícitas,
+os timeouts e as tentativas existentes são preservados, inclusive para RIRA.
