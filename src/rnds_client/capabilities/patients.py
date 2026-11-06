@@ -18,7 +18,7 @@ class PatientsCapability:
     def __init__(self, client: RndsBaseClient) -> None:
         self._client = client
 
-    async def buscar_pessoa(self, identificador: str) -> dict[str, Any] | None:
+    async def buscar_pessoa(self, identificador: str, *, validar_resposta: bool = False) -> dict[str, Any] | None:
         query_parameter = self._query_parameter(identificador)
         if query_parameter is None:
             return None
@@ -26,12 +26,29 @@ class PatientsCapability:
         response = await self._client.request_with_retry(
             "GET",
             self._person_url(query_parameter),
-            non_retryable_statuses={400, 404},
+            non_retryable_statuses={404} if validar_resposta else {400, 404},
         )
         if response is None:
             return None
 
-        return format_patient_payload(response.json())
+        payload = response.json()
+        if validar_resposta:
+            if not isinstance(payload, dict) or payload.get("resourceType") != "Bundle":
+                raise ValueError("Resposta cadastral RNDS inválida.")
+            if "entry" in payload and not isinstance(payload["entry"], list):
+                raise ValueError("Resposta cadastral RNDS inválida.")
+            if not payload.get("entry"):
+                if payload.get("total", 0) == 0:
+                    return None
+                raise ValueError("Resposta cadastral RNDS incompleta.")
+        dados = format_patient_payload(payload)
+        if validar_resposta:
+            identificadores = [dados.get("cpf"), dados.get("cns"), *(dados.get("lista_cns") or [])] if dados else []
+            if not dados or not isinstance(dados.get("nome"), str) or not dados["nome"].strip() or self._normalized_identifier(identificador) not in {
+                self._normalized_identifier(valor) for valor in identificadores if valor
+            }:
+                raise ValueError("Resposta cadastral RNDS incompleta ou divergente.")
+        return dados
 
     async def buscar_pessoa_debug(
         self,

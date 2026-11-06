@@ -69,3 +69,37 @@ class VersaoDistribuicaoTest(unittest.TestCase):
         from importlib.metadata import version
         import rnds_client
         self.assertEqual(rnds_client.__version__, version("3s-rnds-client"))
+
+
+class AusenciaConfirmadaTests(unittest.IsolatedAsyncioTestCase):
+    async def _consultar(self, payload, status=200):
+        from rnds_client.capabilities.patients import PatientsCapability
+        cache = SimpleNamespace(load=AsyncMock(return_value=SimpleNamespace(value='token')))
+        settings = SimpleNamespace(cns_authorization='', service_url='https://teste.invalid')
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(status, json=payload))) as http:
+            base = RndsBaseClient(settings, http, attempts=1, token_cache=cache)
+            return await PatientsCapability(base).buscar_pessoa('12345678901', validar_resposta=True)
+
+    async def test_payload_inesperado_nao_e_ausencia(self):
+        for payload in ({}, {'resourceType': 'OperationOutcome'}, {'resourceType': 'Bundle', 'total': 1}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                await self._consultar(payload)
+
+    async def test_bundle_vazio_e_ausencia_confirmada(self):
+        self.assertIsNone(await self._consultar({'resourceType': 'Bundle', 'total': 0}))
+
+    async def test_400_nao_e_ausencia(self):
+        with self.assertRaises(httpx.HTTPStatusError):
+            await self._consultar({}, status=400)
+
+    async def test_pessoa_divergente_nao_e_aceita(self):
+        with self.assertRaises(ValueError):
+            await self._consultar({'resourceType': 'Bundle', 'entry': [{'resource': {
+                'name': [{'text': 'Paciente'}], 'identifier': [{'system': 'http://rnds/cpf', 'value': '99999999999'}]
+            }}]})
+
+    async def test_pessoa_coerente_e_aceita(self):
+        dados = await self._consultar({'resourceType': 'Bundle', 'entry': [{'resource': {
+            'name': [{'text': 'Paciente'}], 'identifier': [{'system': 'http://rnds/cpf', 'value': '12345678901'}]
+        }}]})
+        self.assertEqual(dados['nome'], 'Paciente')
