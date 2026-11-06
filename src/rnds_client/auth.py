@@ -68,16 +68,16 @@ class AuthenticationFactory:
         )
 
 
-def build_http_client(settings: RndsSettings) -> AsyncClient:
+def build_http_client(settings: RndsSettings, *, timeout=None) -> AsyncClient:
     if settings.auth_method is AuthMethod.CERT:
         if settings.certificate_files is None:
             raise RndsConfigurationError("CERT authentication requires RNDS_CERT and RNDS_KEY.")
         return AsyncClient(
             cert=settings.certificate_files.as_httpx_cert(),
             verify=True,
-            timeout=Timeout(_HTTP_TIMEOUT_SECONDS),
+            timeout=timeout if timeout is not None else Timeout(_HTTP_TIMEOUT_SECONDS),
         )
-    return AsyncClient(timeout=Timeout(_HTTP_TIMEOUT_SECONDS))
+    return AsyncClient(timeout=timeout if timeout is not None else Timeout(_HTTP_TIMEOUT_SECONDS))
 
 
 def _access_token_from_response(response: Response, source: str) -> str:
