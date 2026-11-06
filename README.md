@@ -276,3 +276,5 @@ aceita timeout HTTPX, tentativas e cache assíncrono (`load`/`save`) explícitos
 de uso continua sendo responsabilidade do consumidor. Cancelamento durante a
 criação fecha o cliente HTTP antes de propagar a exceção. Sem opções explícitas,
 os timeouts e as tentativas existentes são preservados, inclusive para RIRA.
+
+A versão 0.3.6 mantém a versão pública do módulo coerente com os metadados da distribuição.

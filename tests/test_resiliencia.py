@@ -62,3 +62,10 @@ class ResilienciaTests(unittest.IsolatedAsyncioTestCase):
             resultados = await asyncio.gather(*(c._ensure_access_token() for c in clientes))
         self.assertEqual(resultados, [token, token])
         self.assertEqual(autenticar_mock.await_count, 1)
+
+
+class VersaoDistribuicaoTest(unittest.TestCase):
+    def test_versao_publica_corresponde_a_distribuicao_instalada(self):
+        from importlib.metadata import version
+        import rnds_client
+        self.assertEqual(rnds_client.__version__, version("3s-rnds-client"))
