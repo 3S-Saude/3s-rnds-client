@@ -278,3 +278,5 @@ criação fecha o cliente HTTP antes de propagar a exceção. Sem opções expl�
 os timeouts e as tentativas existentes são preservados, inclusive para RIRA.
 
 A versão 0.3.6 mantém a versão pública do módulo coerente com os metadados da distribuição.
+
+Para distinguir ausência confirmada de resposta inválida, use `buscar_pessoa(..., validar_resposta=True)`. O modo exige identidade e nome coerentes; falhas SOAP/FHIR não viram ausência. O padrão permanece compatível com consumidores existentes.
